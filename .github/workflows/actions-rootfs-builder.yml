@@ -1,158 +1,165 @@
-name: AlmaLinux 8 and 9, Container/Docker Images builders
-run-name: ${{ github.actor }} - Scan for Security Updates and Build RootFS
+name: AlmaLinux 8 and 9, Container/Docker Images builder and uploader (to docker Hub)
 
 on:
-  # push:
-  #   branches:
-  #     - 'yuravk-patch-1'
-  workflow_dispatch:
-    inputs:
-      major_version:
-        description: 'AlmaLinux major version'
-        required: true
-        default: '9'
-        type: choice
-        options:
-          - 9
-          - 8
-      minor_version:
-        description: 'AlmaLinux minor version'
-        required: true
-        default: '3'
-        type: choice
-        options:
-          - 0
-          - 1
-          - 2
-          - 3
-          - 4
-          - 5
-          - 6
-          - 7
-          - 8
-          - 9
-      image_types:
-        description: 'Image type(s) to build'
-        required: true
-        default: 'minimal'
-        type: choice
-        options:
-          - default
-          - minimal
-          - micro
-          - base
-          - init
-      push:
-        description: 'Push to DockerHub'
-        required: true
-        type: boolean
+    workflow_dispatch:
+        inputs:
+          major_version:
+            description: 'AlmaLinux major version'
+            required: true
+            default: '9'
+            type: choice
+            options:
+              - 9
+              - 8
+          # minor_version:
+          #   description: 'AlmaLinux minor version'
+          #   required: true
+          #   default: '3'
+          #   type: choice
+          #   options:
+          #     - 0
+          #     - 1
+          #     - 2
+          #     - 3
+          #     - 4
+          #     - 5
+          #     - 6
+          #     - 7
+          #     - 8
+          #     - 9
+          image_types:
+            description: 'Image type(s) to build'
+            required: true
+            default: 'minimal'
+            type: choice
+            options:
+              - default
+              - minimal
+              - micro
+              - base
+              - init
+          push:
+            description: 'Push to DockerHub'
+            required: true
+            type: boolean
 
-      # image_archs:
-      #   description: 'Image arch(s) to build'
-      #   required: true
-      #   default: 'all'
-      #   type: choice
-      #   options:
-      #     - all
-      #     - x86_64
-      #     - aarch64
-      #     - ppc64le
-      #     - s390x
+env:
+  VERSION_MINOR: ${{ inputs.major_version == '9' && '3' || '9' }}
+  REGISTRY_IMAGE: ykohut/almalinux
+
 jobs:
-  Build-and-Push:
-    name: "Buil and Push ${{ inputs.major_version }}.${{ inputs.minor_version }} ${{ inputs.image_types }} ${{ matrix.platform }}"
+  build:
+    name: "Buil and Push ${{ inputs.major_version }} ${{ inputs.image_types }} ${{ matrix.platform }}"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         platform:
-          - amd64
-          - arm64
-    env:
-      VERSION_MAJOR: 9
-      VERSION_MINOR: 3
+          - linux/amd64
+          # - linux/ppc64le
+          # - linux/s390x
+          # - linux/arm64
+
+        # image_types:
+        #   - default
+        #   - minimal
+        #   - micro
+        #   - base
+        #   - init
     steps:
-      - run: echo "🎉 The job was automatically triggered by a ${{ github.event_name }} event."
-      - run: echo "🐧 This job is now running on a ${{ runner.os }} server hosted by GitHub!"
-      - run: echo "🔎 The name of your branch is ${{ github.ref }} and your repository is ${{ github.repository }}."
-
-      - name: Check out repository code
+      -
+        name: Prepare
+        run: |
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+      -
+        name: Checkout
         uses: actions/checkout@v4
-      - run: echo "💡 The ${{ github.repository }} repository has been cloned to the runner."
-      - run: echo "🖥️ The workflow is now ready to test your code on the runner."
 
-      - name: Set up QEMU
+      -
+        name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-      - name: Set up Docker Buildx
+      -
+        name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-  
-      - name: Login to Docker Hub
+      -
+        name: Login to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # - name: List files in the repository
-      #   run: |
-      #     ls ${{ github.workspace }}
-
-      # - name: Set GitHub environment variables
-      #   run: |
-      #     echo "VERSION_MAJOR=$( [ -n '${{ inputs.major_version }}' ] && echo ${{ inputs.major_version }} || echo $VERSION_MAJOR )" >> $GITHUB_ENV
-      #     echo "VERSION_MINOR=$( [ -n '${{ inputs.minor_version }}' ] && echo ${{ inputs.minor_version }} || echo $VERSION_MINOR )" >> $GITHUB_ENV
-      #     echo "ENV_JOB_TAG=al${VERSION_MAJOR}" >> $GITHUB_ENV
-      #     echo "WS_DIR=dock_${VERSION_MAJOR}" >> $GITHUB_ENV
-      #     platform=${{ matrix.platform }}
-      #     echo "PLATFORM=${platform#linux/}" >> $GITHUB_ENV
-
-      - name: Build and push
+      -
+        name: Build and push by digest
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}/${{ inputs.image_types }}"
-          platforms: linux/${{ matrix.platform }}
-          push: ${{ inputs.push }}
-          tags: ykohut/almalinux:${{ inputs.major_version }}.${{ inputs.minor_version }}-${{ inputs.image_types }}-${{ matrix.platform }}
+          platforms: ${{ matrix.platform }}
+          # labels: ${{ steps.meta.outputs.labels }}
+          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ inputs.push }}
+      -
+        name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+      -
+        name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
 
-      # - name: Build env. specifications
-      #   run: |
-      #     # sudo apt-get update >/dev/null
-      #     # sudo apt-get install virt-what >/dev/null
-      #     # echo -n "Virtualisation: " && sudo virt-what
-      #     # echo -n "CPU " && cat /proc/cpuinfo | grep 'model\sname' | head -1
-      #     # echo -n "CPU number: " && nproc
-      #     # echo "Memory info:" && free -m
-      #     # echo "/ partition size:" && df -H --output=size / | grep -vi size
-      # - name: Prepare Workspace
-      #   run: |
-      #     pwd
-      #     BIN_DIR="${PWD}/bin"
-      #     mkdir -p ${BIN_DIR}
-      #     curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b $BIN_DIR
-      #     export PATH="${BIN_DIR}:$PATH"
-      #     grype db update && grype version
+  merge:
+    runs-on: ubuntu-latest
+    needs:
+      - build
+    steps:
+      -
+        name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-*
+          merge-multiple: true
+      -
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      -
+        name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+          # Set 'letest' tag for AlmaLinux 9 default image
+          # Set '8' or '9' tag for AlmaLinux 8 or 9 and default image
+          tags: |
+            type=raw,value=latest,enable=${{ inputs.image_types == 'default' && inputs.major_version == '9'  }}
+            type=raw,value=${{ inputs.major_version }},enable=${{ inputs.image_types == 'default' && inputs.major_version == '9' || inputs.major_version == '8' }}
+            type=raw,value=${{ inputs.major_version }}-${{ inputs.image_types }}
+            type=raw,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ inputs.image_types }}
 
-      # - name: Pre-Sec Scan
-      #   run: |
-      #     echo "Pre-Sec Scan"
-      #     export PATH="${PWD}/bin:$PATH"
-      #     ./sec_scan almalinux:${VERSION_MAJOR}
+          labels: |
+            maintainer=Yuriy Kohut <ykohut@almalinux.org>
+            org.opencontainers.image.title=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ inputs.image_types }}
+            org.opencontainers.image.description=Almalinux ${{ inputs.major_version }}.${{ env.VERSION_MINOR }} ${{ inputs.image_types }} for ${{ matrix.platform }}
+            org.opencontainers.image.vendor=AlmaLinux
 
-      # - name: Building RootFS
-      #   run: |
-      #     source docker_utils_functions
-      #     [ -n "${{ inputs.image_types }}" ] && image_types="${{ inputs.image_types }}" || image_types="all"
-      #     [ -n "${{ inputs.image_archs }}" ] && arch_types="${{ inputs.image_archs }}" || arch_types="all"
-      #     echo "Prepare to build AlmaLinux ${VERSION_MAJOR}.${VERSION_MINOR} image(s): arch: ${arch_types}; type: ${image_types}"
-
-      #     print_env_header "env.${ENV_JOB_TAG}";
-      #     almaEnvBuilder  "env.${ENV_JOB_TAG}" "${VERSION_MAJOR}" "${VERSION_MINOR}" "${arch_types}" "${image_types}" "devl" "today"
-      #     cat $PWD/env.${ENV_JOB_TAG} && cp $PWD/env.${ENV_JOB_TAG} $PWD/env.log
-
-      #     IMG_TYPES=$(get_build_types "${image_types}")
-      #     for IMG_TYPE in $IMG_TYPES; do
-      #       ./${ENV_JOB_TAG}_build_rootfs $IMG_TYPE
-      #     done
-
-      # - run: |
-      #     test -e work && ( ls -la work && du -sm work ) || true
-      #     echo "🍏 This job's status is ${{ job.status }}."
+      -
+        name: Login to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      -
+        name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+      -
+        name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }}
