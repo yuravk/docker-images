@@ -1,4 +1,4 @@
-name: AlmaLinux 8 and 9, Container/Docker Images builder and uploader (to docker Hub)
+name: AlmaLinux 8 and 9, Container/Docker Images builder and uploader (to Docker Hub)
 
 on:
     workflow_dispatch:
@@ -11,33 +11,17 @@ on:
             options:
               - 9
               - 8
-          # minor_version:
-          #   description: 'AlmaLinux minor version'
-          #   required: true
-          #   default: '3'
-          #   type: choice
-          #   options:
-          #     - 0
-          #     - 1
-          #     - 2
-          #     - 3
-          #     - 4
-          #     - 5
-          #     - 6
-          #     - 7
-          #     - 8
-          #     - 9
-          image_types:
-            description: 'Image type(s) to build'
+
+          platform:
+            description: 'Comma-separated list of platforms: "linux/amd64", "linux/ppc64le", "linux/s390x", "linux/arm64"'
             required: true
-            default: 'minimal'
-            type: choice
-            options:
-              - default
-              - minimal
-              - micro
-              - base
-              - init
+            default: '"linux/amd64", "linux/ppc64le", "linux/s390x", "linux/arm64"'
+
+          image_types:
+            description: 'Comma-separated list of image type(s): "default", "minimal", "micro", "base", "init"'
+            required: true
+            default: '"default", "minimal", "micro", "base", "init"'
+ 
           push:
             description: 'Push to DockerHub'
             required: true
@@ -49,33 +33,42 @@ env:
 
 jobs:
   build:
-    name: "Buil and Push ${{ inputs.major_version }} ${{ inputs.image_types }} ${{ matrix.platform }}"
+    name: "Build for ${{ inputs.major_version }} ${{ matrix.image_types }} ${{ matrix.platform }}"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        platform:
-          - linux/amd64
+        platform: ${{ fromJSON(format('[{0}]', inputs.platform || '"linux/amd64", "linux/ppc64le", "linux/s390x", "linux/arm64"')) }}
+          # - linux/amd64
           # - linux/ppc64le
           # - linux/s390x
           # - linux/arm64
 
-        # image_types:
-        #   - default
-        #   - minimal
-        #   - micro
-        #   - base
-        #   - init
+        image_types: ${{ fromJSON(format('[{0}]', inputs.image_types || '"default", "minimal", "micro", "base", "init"')) }}
+          # - default
+          # - minimal
+          # - micro
+          # - base
+          # - init
     steps:
       -
         name: Prepare
         run: |
           platform=${{ matrix.platform }}
           echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+          image_types=${{ matrix.image_types }}
+          echo "IMAGE_TYPES_PAIR=${image_types//\//-}" >> $GITHUB_ENV
       -
         name: Checkout
         uses: actions/checkout@v4
 
+      -
+        name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY_IMAGE }}
+ 
       -
         name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -93,9 +86,10 @@ jobs:
         id: build
         uses: docker/build-push-action@v5
         with:
-          context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}/${{ inputs.image_types }}"
+          context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}/${{ matrix.image_types }}"
           platforms: ${{ matrix.platform }}
           # labels: ${{ steps.meta.outputs.labels }}
+          # tags: ${{ steps.meta.outputs.tags }}
           outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ inputs.push }}
       -
         name: Export digest
@@ -107,13 +101,19 @@ jobs:
         name: Upload digest
         uses: actions/upload-artifact@v4
         with:
-          name: digests-${{ env.PLATFORM_PAIR }}
+          name: digests-${{ env.PLATFORM_PAIR }}-${{ env.IMAGE_TYPES_PAIR }}
           path: /tmp/digests/*
           if-no-files-found: error
           retention-days: 1
 
   merge:
+    name: "Push for ${{ inputs.major_version }} ${{ matrix.image_types }}"
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image_types: ${{ fromJSON(format('[{0}]', inputs.image_types || '"default", "minimal", "micro", "base", "init"')) }}
+
     needs:
       - build
     steps:
@@ -122,7 +122,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: /tmp/digests
-          pattern: digests-*
+          pattern: digests-*${{ matrix.image_types }}
           merge-multiple: true
       -
         name: Set up Docker Buildx
@@ -134,19 +134,19 @@ jobs:
         with:
           images: ${{ env.REGISTRY_IMAGE }}
           # Set 'letest' tag for AlmaLinux 9 default image
-          # Set '8' or '9' tag for AlmaLinux 8 or 9 and default image
+          # Set '8'/'9' and 8.9/9.3 tags for AlmaLinux 8 or 9 and default image
           tags: |
-            type=raw,value=latest,enable=${{ inputs.image_types == 'default' && inputs.major_version == '9'  }}
-            type=raw,value=${{ inputs.major_version }},enable=${{ inputs.image_types == 'default' && inputs.major_version == '9' || inputs.major_version == '8' }}
-            type=raw,value=${{ inputs.major_version }}-${{ inputs.image_types }}
-            type=raw,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ inputs.image_types }}
+            type=raw,priority=500,value=latest,enable=${{ matrix.image_types == 'default' && inputs.major_version == '9'  }}
+            type=raw,priority=400,value=${{ inputs.major_version }},enable=${{ matrix.image_types == 'default' }}
+            type=raw,priority=300,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }},enable=${{ matrix.image_types == 'default' }}
+            type=raw,priority=200,value=${{ inputs.major_version }}-${{ matrix.image_types }},enable=${{ matrix.image_types != 'default' }}
+            type=raw,priority=100,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }},enable=${{ matrix.image_types != 'default' }}
 
           labels: |
             maintainer=Yuriy Kohut <ykohut@almalinux.org>
-            org.opencontainers.image.title=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ inputs.image_types }}
-            org.opencontainers.image.description=Almalinux ${{ inputs.major_version }}.${{ env.VERSION_MINOR }} ${{ inputs.image_types }} for ${{ matrix.platform }}
+            org.opencontainers.image.title=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}
+            org.opencontainers.image.description=Almalinux ${{ inputs.major_version }}.${{ env.VERSION_MINOR }} ${{ matrix.image_types }} for ${{ matrix.platform }}
             org.opencontainers.image.vendor=AlmaLinux
-
       -
         name: Login to Docker Hub
         uses: docker/login-action@v3
