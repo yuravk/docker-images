@@ -1,4 +1,4 @@
-name: AlmaLinux 8 and 9, Container/Docker Images builder and uploader (to Docker Hub)
+name: AlmaLinux 8 and 9, Container/Docker Images builder and uploader
 
 on:
     workflow_dispatch:
@@ -13,25 +13,23 @@ on:
               - 8
 
           platform:
-            description: 'Comma-separated list of platforms: "linux/amd64", "linux/ppc64le", "linux/s390x", "linux/arm64"'
+            description: 'Comma-separated list of platforms: linux/amd64, linux/ppc64le, linux/s390x, linux/arm64'
             required: true
-            # default: '"linux/amd64", "linux/ppc64le", "linux/s390x", "linux/arm64"'
-            default: '"linux/amd64"'
+            default: 'linux/amd64, linux/ppc64le, linux/s390x, linux/arm64'
 
           image_types:
-            description: 'Comma-separated list of image type(s): "default", "minimal", "micro", "base", "init"'
+            description: 'Comma-separated list of image types (put each type in quotes): "default", "minimal", "micro", "base", "init"'
             required: true
-            # default: '"default", "minimal", "micro", "base", "init"'
-            default: '"micro"'
+            default: '"default", "minimal", "micro", "base", "init"'
  
-          registry:
-            description: 'Registry to push'
-            required: true
-            default: 'ykohut/almalinux'
-            type: choice
-            options:
-              - ykohut/almalinux
-              - quay.io/ykohut/al
+          # registry:
+          #   description: 'Registry to push'
+          #   required: true
+          #   default: 'ykohut/almalinux'
+          #   type: choice
+          #   options:
+          #     - ykohut/almalinux
+          #     - quay.io/ykohut/al
 
           push:
             description: 'Push to registries'
@@ -44,16 +42,16 @@ env:
 
 jobs:
   build:
-    name: "Build ${{ inputs.major_version }} ${{ matrix.image_types }} for ${{ matrix.platform }}"
+    name: "Build ${{ inputs.major_version }} ${{ matrix.image_types }} for ${{ inputs.platform }} and push to all registries"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        platform: ${{ fromJSON(format('[{0}]', inputs.platform || '"linux/amd64", "linux/ppc64le", "linux/s390x", "linux/arm64"')) }}
-          # - linux/amd64
-          # - linux/ppc64le
-          # - linux/s390x
-          # - linux/arm64
+        # platform: ${{ fromJSON(format('[{0}]', inputs.platform || '"linux/amd64", "linux/ppc64le", "linux/s390x", "linux/arm64"')) }}
+        #   - linux/amd64
+        #   - linux/ppc64le
+        #   - linux/s390x
+        #   - linux/arm64
 
         image_types: ${{ fromJSON(format('[{0}]', inputs.image_types || '"default", "minimal", "micro", "base", "init"')) }}
           # - default
@@ -61,14 +59,31 @@ jobs:
           # - micro
           # - base
           # - init
+
     steps:
       -
         name: Prepare
         run: |
-          platform=${{ matrix.platform }}
-          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
+          # platform=${{ matrix.platform }}
+          # echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
           image_types=${{ matrix.image_types }}
           echo "IMAGE_TYPES_PAIR=${image_types//\//-}" >> $GITHUB_ENV
+
+          REGISTRIES="docker.io/ykohut/almalinux quay.io/ykohut/al"
+          TAGS=
+          for REGISTRY in ${REGISTRIES}; do
+            case ${{ matrix.image_types }} in
+              default )
+                TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }} $REGISTRY:${{ inputs.major_version }}.${{ env.VERSION_MINOR }}"
+                [ "${{ inputs.major_version }}" = "9" ] && TAGS="${TAGS} $REGISTRY:latest"
+                ;;
+              * )
+                TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }}-${{ matrix.image_types }} $REGISTRY:${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}"
+                ;;
+            esac
+          done
+          TAGS=${TAGS# }
+          echo "TAGS=${TAGS// /,}" >> $GITHUB_ENV          
       -
         name: Checkout
         uses: actions/checkout@v4
@@ -101,100 +116,11 @@ jobs:
           password: ${{ secrets.QUAY_IO_CLI_PASSWORD }}
 
       -
-        name: Build and push by digest
+        name: Build and push by tags
         id: build
         uses: docker/build-push-action@v5
         with:
           context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}/${{ matrix.image_types }}"
-          platforms: ${{ matrix.platform }}
-          # labels: ${{ steps.meta.outputs.labels }}
-          # tags: ${{ steps.meta.outputs.tags }}
-          outputs: 
-            type=image,name=${{ inputs.registry }},push-by-digest=true,name-canonical=true,push=${{ inputs.push }}
-      -
-        name: Export digest
-        run: |
-          mkdir -p /tmp/digests
-          digest="${{ steps.build.outputs.digest }}"
-          touch "/tmp/digests/${digest#sha256:}"
-      -
-        name: Upload digest
-        uses: actions/upload-artifact@v4
-        with:
-          name: digests-${{ env.PLATFORM_PAIR }}-${{ env.IMAGE_TYPES_PAIR }}
-          path: /tmp/digests/*
-          if-no-files-found: error
-          retention-days: 1
-
-
-  merge:
-    name: "Push ${{ inputs.major_version }} ${{ matrix.image_types }} to ${{ inputs.registry }}"
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        image_types: ${{ fromJSON(format('[{0}]', inputs.image_types || '"default", "minimal", "micro", "base", "init"')) }}
-        # registry:
-        #   - ykohut/almalinux
-        #   - quay.io/ykohut/al
-
-    needs:
-      - build
-    steps:
-      -
-        name: Download digests
-        uses: actions/download-artifact@v4
-        with:
-          path: /tmp/digests
-          pattern: digests-*${{ matrix.image_types }}
-          merge-multiple: true
-      - name: Display structure of downloaded digests
-        run: ls -la /tmp/digests
-      -
-        name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-        # with:
-        #   driver-opts: image=moby/buildkit:master
-      -
-        name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ${{ inputs.registry }}
-          # Set 'letest' tag for AlmaLinux 9 default image
-          # Set '8'/'9' and 8.9/9.3 tags for AlmaLinux 8 or 9 and default image
-          tags: |
-            type=raw,priority=500,value=latest,enable=${{ matrix.image_types == 'default' && inputs.major_version == '9'  }}
-            type=raw,priority=400,value=${{ inputs.major_version }},enable=${{ matrix.image_types == 'default' }}
-            type=raw,priority=300,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }},enable=${{ matrix.image_types == 'default' }}
-            type=raw,priority=200,value=${{ inputs.major_version }}-${{ matrix.image_types }},enable=${{ matrix.image_types != 'default' }}
-            type=raw,priority=100,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }},enable=${{ matrix.image_types != 'default' }}
-
-          labels: |
-            maintainer=Yuriy Kohut <ykohut@almalinux.org>
-            org.opencontainers.image.title=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}
-            org.opencontainers.image.description=Almalinux ${{ inputs.major_version }}.${{ env.VERSION_MINOR }} ${{ matrix.image_types }} images for various platform(s)
-            org.opencontainers.image.vendor=AlmaLinux
-      -
-        name: Login to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-      -
-        name: Login to Quay.io
-        uses: docker/login-action@v3
-        with:
-          registry: quay.io
-          username: ${{ secrets.QUAY_IO_USERNAME }}
-          password: ${{ secrets.QUAY_IO_CLI_PASSWORD }}
-      -
-        name: Create manifest list and push
-        working-directory: /tmp/digests
-        run: |
-          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ inputs.registry }}@sha256:%s ' *)
-      -
-        name: Inspect image
-        run: |
-          docker buildx imagetools inspect ${{ inputs.registry }}:${{ steps.meta.outputs.version }}
+          platforms: ${{ inputs.platform }}
+          push: ${{ inputs.push }}
+          tags: ${{ env.TAGS }}
