@@ -15,13 +15,24 @@ on:
           platform:
             description: 'Comma-separated list of platforms: "linux/amd64", "linux/ppc64le", "linux/s390x", "linux/arm64"'
             required: true
-            default: '"linux/amd64", "linux/ppc64le", "linux/s390x", "linux/arm64"'
+            # default: '"linux/amd64", "linux/ppc64le", "linux/s390x", "linux/arm64"'
+            default: '"linux/amd64"'
 
           image_types:
             description: 'Comma-separated list of image type(s): "default", "minimal", "micro", "base", "init"'
             required: true
-            default: '"default", "minimal", "micro", "base", "init"'
+            # default: '"default", "minimal", "micro", "base", "init"'
+            default: '"micro"'
  
+          registry:
+            description: 'Registry to push'
+            required: true
+            default: 'ykohut/almalinux'
+            type: choice
+            options:
+              - ykohut/almalinux
+              - quay.io/ykohut/al
+
           push:
             description: 'Push to registries'
             required: true
@@ -29,7 +40,7 @@ on:
 
 env:
   VERSION_MINOR: ${{ inputs.major_version == '9' && '3' || '9' }}
-  REGISTRY_IMAGE: ykohut/almalinux
+  # REGISTRY_IMAGE: ykohut/almalinux
 
 jobs:
   build:
@@ -98,7 +109,8 @@ jobs:
           platforms: ${{ matrix.platform }}
           # labels: ${{ steps.meta.outputs.labels }}
           # tags: ${{ steps.meta.outputs.tags }}
-          outputs: type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ inputs.push }}
+          outputs: 
+            type=image,name=${{ inputs.registry }},push-by-digest=true,name-canonical=true,push=${{ inputs.push }}
       -
         name: Export digest
         run: |
@@ -116,15 +128,15 @@ jobs:
 
 
   merge:
-    name: "Push ${{ inputs.major_version }} ${{ matrix.image_types }} to ${{ matrix.registry }}"
+    name: "Push ${{ inputs.major_version }} ${{ matrix.image_types }} to ${{ inputs.registry }}"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         image_types: ${{ fromJSON(format('[{0}]', inputs.image_types || '"default", "minimal", "micro", "base", "init"')) }}
-        registry:
-          - ykohut/almalinux
-          - quay.io/repository/ykohut/al
+        # registry:
+        #   - ykohut/almalinux
+        #   - quay.io/ykohut/al
 
     needs:
       - build
@@ -136,6 +148,8 @@ jobs:
           path: /tmp/digests
           pattern: digests-*${{ matrix.image_types }}
           merge-multiple: true
+      - name: Display structure of downloaded digests
+        run: ls -la /tmp/digests
       -
         name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -146,7 +160,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ matrix.registry }}
+          images: ${{ inputs.registry }}
           # Set 'letest' tag for AlmaLinux 9 default image
           # Set '8'/'9' and 8.9/9.3 tags for AlmaLinux 8 or 9 and default image
           tags: |
@@ -179,8 +193,8 @@ jobs:
         working-directory: /tmp/digests
         run: |
           docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
-            $(printf '${{ matrix.registry }}@sha256:%s ' *)
+            $(printf '${{ inputs.registry }}@sha256:%s ' *)
       -
         name: Inspect image
         run: |
-          docker buildx imagetools inspect ${{ matrix.registry }}:${{ steps.meta.outputs.version }}
+          docker buildx imagetools inspect ${{ inputs.registry }}:${{ steps.meta.outputs.version }}
