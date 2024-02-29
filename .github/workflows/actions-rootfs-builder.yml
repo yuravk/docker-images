@@ -15,12 +15,12 @@ on:
           platform:
             description: 'Comma-separated list of platforms: linux/amd64, linux/ppc64le, linux/s390x, linux/arm64'
             required: true
-            default: 'linux/amd64, linux/ppc64le, linux/s390x, linux/arm64'
+            default: 'linux/amd64, linux/arm64'
 
           image_types:
             description: 'Comma-separated list of image types (put each type in quotes): "default", "minimal", "micro", "base", "init"'
             required: true
-            default: '"default", "minimal", "micro", "base", "init"'
+            default: '"micro"'
  
           # registry:
           #   description: 'Registry to push'
@@ -30,6 +30,10 @@ on:
           #   options:
           #     - ykohut/almalinux
           #     - quay.io/ykohut/al
+          registry:
+            description: 'Comma-separated list of registries: docker.io/ykohut/almalinux, quay.io/ykohut/al ghcr.io/yuravk/almalinux'
+            required: true
+            default: 'docker.io/ykohut/almalinux, quay.io/ykohut/al, ghcr.io/yuravk/almalinux'
 
           push:
             description: 'Push to registries'
@@ -66,23 +70,35 @@ jobs:
         run: |
           # platform=${{ matrix.platform }}
           # echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
-          image_types=${{ matrix.image_types }}
-          echo "IMAGE_TYPES_PAIR=${image_types//\//-}" >> $GITHUB_ENV
+          # image_types=${{ matrix.image_types }}
+          # echo "IMAGE_TYPES_PAIR=${image_types//\//-}" >> $GITHUB_ENV
 
-          REGISTRIES="docker.io/ykohut/almalinux quay.io/ykohut/al"
+          # date stamp
+          STAMP=$(date '+%Y%m%d')
+          # list of registries to push to
+          REGISTRIES="${{ inputs.registry }}"
           TAGS=
-          for REGISTRY in ${REGISTRIES}; do
+          for REGISTRY in ${REGISTRIES//,/ }; do
             case ${{ matrix.image_types }} in
               default )
+                # tags: MAJOR, MAJOR.MINOR
                 TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }} $REGISTRY:${{ inputs.major_version }}.${{ env.VERSION_MINOR }}"
+                # tags: MAJOR.MINOR-STAMP
+                TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${STAMP}"
+                # tags: latest
                 [ "${{ inputs.major_version }}" = "9" ] && TAGS="${TAGS} $REGISTRY:latest"
                 ;;
               * )
+                # tags: MAJOR-TYPE, MAJOR.MINOR-TYPE
                 TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }}-${{ matrix.image_types }} $REGISTRY:${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}"
+                # tags: MAJOR.MINOR-TYPE-STAMP
+                TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${STAMP}"
                 ;;
             esac
           done
+          # remove space at the beginning of string
           TAGS=${TAGS# }
+          # separate with comma instead of space and export to the action
           echo "TAGS=${TAGS// /,}" >> $GITHUB_ENV          
       -
         name: Checkout
@@ -114,13 +130,23 @@ jobs:
           registry: quay.io
           username: ${{ secrets.QUAY_IO_USERNAME }}
           password: ${{ secrets.QUAY_IO_CLI_PASSWORD }}
+      -
+        name: Login to Ghcr.io
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GIT_HUB_USERNAME }}
+          password: ${{ secrets.GIT_HUB_TOKEN }}
 
       -
         name: Build and push by tags
         id: build
         uses: docker/build-push-action@v5
         with:
+          provenance: false
           context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}/${{ matrix.image_types }}"
+          # file: ./Dockerfile
           platforms: ${{ inputs.platform }}
           push: ${{ inputs.push }}
+          # load: true
           tags: ${{ env.TAGS }}
