@@ -115,16 +115,14 @@ jobs:
           
           echo
           echo $TAGS
+
+          # Use containerd image store
+          sudo sed -i '$s/}/, "features": { "containerd-snapshotter": true } }/' /etc/docker/daemon.json
+          sudo systemctl restart docker
+          docker info -f '{{ .DriverStatus }}'
       -
         name: Checkout
         uses: actions/checkout@v4
-
-      # -
-      #   name: Docker meta
-      #   id: meta
-      #   uses: docker/metadata-action@v5
-      #   with:
-      #     images: ${{ env.REGISTRY_IMAGE }}
  
       -
         name: Set up QEMU
@@ -175,10 +173,41 @@ jobs:
       #       type=raw,priority=100,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${{ env.STAMP }},enable=${{ matrix.image_types != 'default' }}
 
       -
-        name: Build and push to registry
+        name: Build images
         # if 'Push to registries' is checked
         if: inputs.push
-        id: build-push-registry
+        id: build-images
+        uses: docker/build-push-action@v5
+        with:
+          provenance: false
+          context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}"
+          file: ./Dockerfile.${{ matrix.image_types }}
+          platforms: ${{ inputs.platform }}
+          push: false
+          load: true
+          tags: ${{ env.TAGS }}
+          # tags: ${{ steps.meta.outputs.tags }}
+          # labels: ${{ steps.meta.outputs.labels }}
+  
+      -
+        name: Test images
+        # if 'Push to registries' is checked
+        if: inputs.push
+        id: test-images
+        run: |
+          archs="${{ inputs.platform }}"
+          for arch in ${archs//,/ }; do
+            docker run --platform=${arch} ${{ steps.build-images.outputs.imageid }} /bin/bash -c " \
+            uname -m && \
+            cat /etc/almalinux-release \
+            "
+          done
+
+      -
+        name: Push to registry
+        # if 'Push to registries' is checked
+        if: inputs.push
+        id: push-images
         uses: docker/build-push-action@v5
         with:
           provenance: false
@@ -189,6 +218,9 @@ jobs:
           tags: ${{ env.TAGS }}
           # tags: ${{ steps.meta.outputs.tags }}
           # labels: ${{ steps.meta.outputs.labels }}
+
+
+      # STORE ROOTFS on CLIENT
 
       -
         name: Build and store on client
