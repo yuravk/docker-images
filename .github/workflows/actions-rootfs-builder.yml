@@ -42,7 +42,7 @@ on:
             type: boolean
 
 env:
-  VERSION_MINOR: ${{ inputs.major_version == '9' && '3' || '9' }}
+  # VERSION_MINOR: ${{ inputs.major_version == '9' && '3' || '10' }}
   REGISTRY_IMAGE: ykohut/almalinux
 
 jobs:
@@ -69,9 +69,24 @@ jobs:
       -
         name: Prepare
         run: |
+          # set minor version
+          case ${{ inputs.major_version }} in
+            8)
+              VERSION_MINOR="9" ;;
+            9)
+              VERSION_MINOR="3"  ;;
+            10)
+              VERSION_MINOR="0" ;;
+          esac
+          echo "VERSION_MINOR=${VERSION_MINOR}" >> $GITHUB_ENV
+
+          platform="$( echo '${{ inputs.platform }}' | sed 's/\//_/g' )"
+          echo "PLATFORM_PAIR=${platform//,/}" >> $GITHUB_ENV
 
           # date stamp
           STAMP=$(date '+%Y%m%d')
+          echo "STAMP=${STAMP}" >> $GITHUB_ENV
+
           # list of registries to push to
           REGISTRIES="${{ inputs.registry }}"
           TAGS=
@@ -79,17 +94,17 @@ jobs:
             case ${{ matrix.image_types }} in
               default )
                 # tags: MAJOR, MAJOR.MINOR
-                TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }} $REGISTRY:${{ inputs.major_version }}.${{ env.VERSION_MINOR }}"
+                TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }} $REGISTRY:${{ inputs.major_version }}.${VERSION_MINOR}"
                 # tags: MAJOR.MINOR-STAMP
-                TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${STAMP}"
+                TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }}.${VERSION_MINOR}-${STAMP}"
                 # tags: latest
                 [ "${{ inputs.major_version }}" = "9" ] && TAGS="${TAGS} $REGISTRY:latest"
                 ;;
               * )
                 # tags: MAJOR-TYPE, MAJOR.MINOR-TYPE
-                TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }}-${{ matrix.image_types }} $REGISTRY:${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}"
+                TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }}-${{ matrix.image_types }} $REGISTRY:${{ inputs.major_version }}.${VERSION_MINOR}-${{ matrix.image_types }}"
                 # tags: MAJOR.MINOR-TYPE-STAMP
-                TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${STAMP}"
+                TAGS="${TAGS} $REGISTRY:${{ inputs.major_version }}.${VERSION_MINOR}-${{ matrix.image_types }}-${STAMP}"
                 ;;
             esac
           done
@@ -142,6 +157,23 @@ jobs:
           username: ${{ secrets.GIT_HUB_USERNAME }}
           password: ${{ secrets.GIT_HUB_TOKEN }}
 
+      # - 
+      #   name: Docker meta
+      #   id: meta
+      #   uses: docker/metadata-action@v5
+      #   with:
+      #     # list of Docker images to use as base name for tags
+      #     images: ${{ inputs.registry }}
+      #     # generate Docker tags based on the following events/attributes
+      #     tags: |
+      #       type=raw,priority=500,value=latest,enable=${{ matrix.image_types == 'default' && inputs.major_version == '9'  }}
+      #       type=raw,priority=400,value=${{ inputs.major_version }},enable=${{ matrix.image_types == 'default' }}
+      #       type=raw,priority=300,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }},enable=${{ matrix.image_types == 'default' }}
+      #       type=raw,priority=300,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP }},enable=${{ matrix.image_types == 'default' }}
+      #       type=raw,priority=200,value=${{ inputs.major_version }}-${{ matrix.image_types }},enable=${{ matrix.image_types != 'default' }}
+      #       type=raw,priority=100,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }},enable=${{ matrix.image_types != 'default' }}
+      #       type=raw,priority=100,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${{ env.STAMP }},enable=${{ matrix.image_types != 'default' }}
+
       -
         name: Build and push to registry
         # if 'Push to registries' is checked
@@ -155,6 +187,8 @@ jobs:
           platforms: ${{ inputs.platform }}
           push: ${{ inputs.push }}
           tags: ${{ env.TAGS }}
+          # tags: ${{ steps.meta.outputs.tags }}
+          # labels: ${{ steps.meta.outputs.labels }}
 
       -
         name: Build and store on client
@@ -169,13 +203,28 @@ jobs:
           platforms: ${{ inputs.platform }}
           push: ${{ inputs.push }}
           tags: ${{ env.TAGS }}
-          # outputs: type=oci,dest=./al${{ inputs.major_version }}-${{ matrix.image_types }}.tar
-          outputs: type=local,dest=./al${{ inputs.major_version }}-${{ matrix.image_types }}
+          # tags: ${{ steps.meta.outputs.tags }}
+          # labels: ${{ steps.meta.outputs.labels }}
+
+          # type=oci,dest=./al${{ inputs.major_version }}-${{ matrix.image_types }}.tar
+          # type=image,push=true
+          # type=local,dest=./al${{ inputs.major_version }}-${{ matrix.image_types }}
+          outputs: |
+            type=tar,dest=./al${{ inputs.major_version }}-${{ matrix.image_types }}.tar
 
       -
-        name: Check local output
-        # revise results
+        name: Proceed local output
+        # Try to extract and create rootfs from images
         if: ${{ failure() }} || ${{ ! inputs.push }}
         run: |
-          # ls -la ./al${{ inputs.major_version }}-${{ matrix.image_types }}.tar
-          find ./al${{ inputs.major_version }}-${{ matrix.image_types }} -type f
+          echo "Try to extract and create rootfs from images"
+          sudo rm -rf ${{ env.PLATFORM_PAIR }} || true
+          for PLATFORM in ${{ env.PLATFORM_PAIR }}; do
+            arch=${PLATFORM#linux_} || true
+            echo "Creating almalinux-${{ inputs.major_version }}-docker-${arch}-${{ matrix.image_types }}.tar.xz" || true
+            sudo tar xf ./al${{ inputs.major_version }}-${{ matrix.image_types }}.tar $PLATFORM || true
+            sudo tar Jcf almalinux-${{ inputs.major_version }}-docker-${arch}-${{ matrix.image_types }}.tar.xz ./${PLATFORM} || true
+          done
+          sudo rm -rf ${{ env.PLATFORM_PAIR }} || true
+
+          ls -la ./
