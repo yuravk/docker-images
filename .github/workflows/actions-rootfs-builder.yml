@@ -15,12 +15,13 @@ on:
           platform:
             description: 'Comma-separated list of platforms: linux/amd64, linux/ppc64le, linux/s390x, linux/arm64'
             required: true
-            default: 'linux/amd64, linux/arm64'
+            # default: 'linux/amd64, linux/arm64'
+            default: '"linux/amd64", "linux/arm64"'
 
           image_types:
             description: 'Comma-separated list of image types (put each type in quotes): "default", "minimal", "micro", "base", "init"'
             required: true
-            default: '"micro"'
+            default: '"micro", "minimal"'
  
           # registry:
           #   description: 'Registry to push'
@@ -42,22 +43,17 @@ on:
             type: boolean
 
 env:
-  # VERSION_MINOR: ${{ inputs.major_version == '9' && '3' || '10' }}
+  VERSION_MINOR: ${{ inputs.major_version == '9' && '3' || '10' }}
   REGISTRY_IMAGE: ykohut/almalinux
 
 jobs:
   build:
-    name: "Build ${{ inputs.major_version }} ${{ matrix.image_types }} for ${{ inputs.platform }} and push to all registries"
+    name: "Build ${{ inputs.major_version }} ${{ matrix.image_types }} for ${{ matrix.platform }}"
+    # and push to all registries"
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        # platform: ${{ fromJSON(format('[{0}]', inputs.platform || '"linux/amd64", "linux/ppc64le", "linux/s390x", "linux/arm64"')) }}
-        #   - linux/amd64
-        #   - linux/ppc64le
-        #   - linux/s390x
-        #   - linux/arm64
-
         image_types: ${{ fromJSON(format('[{0}]', inputs.image_types || '"default", "minimal", "micro", "base", "init"')) }}
           # - default
           # - minimal
@@ -65,9 +61,15 @@ jobs:
           # - base
           # - init
 
+        platform: ${{ fromJSON(format('[{0}]', inputs.platform || '"linux/amd64", "linux/ppc64le", "linux/s390x", "linux/arm64"')) }}
+          # - linux/amd64
+          # - linux/ppc64le
+          # - linux/s390x
+          # - linux/arm64
+
     steps:
       -
-        name: Prepare
+        name: "Prepare envirounment variables"
         run: |
           # set minor version
           case ${{ inputs.major_version }} in
@@ -80,8 +82,12 @@ jobs:
           esac
           echo "VERSION_MINOR=${VERSION_MINOR}" >> $GITHUB_ENV
 
-          platform="$( echo '${{ inputs.platform }}' | sed 's/\//_/g' )"
-          echo "PLATFORM_PAIR=${platform//,/}" >> $GITHUB_ENV
+          # platform="$( echo '${{ inputs.platform }}' | sed 's/\//_/g' )"
+          # echo "PLATFORM_PAIR=${platform//,/}" >> $GITHUB_ENV
+
+          # for multiplatform distribute building
+          platform=${{ matrix.platform }}
+          echo "PLATFORM_PAIR=${platform//\//-}" >> $GITHUB_ENV
 
           # date stamp
           STAMP=$(date '+%Y%m%d')
@@ -155,108 +161,217 @@ jobs:
           username: ${{ secrets.GIT_HUB_USERNAME }}
           password: ${{ secrets.GIT_HUB_TOKEN }}
 
-      # - 
-      #   name: Docker meta
-      #   id: meta
-      #   uses: docker/metadata-action@v5
+      -
+        name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          provenance: false
+          context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}"
+          file: ./Dockerfile.${{ matrix.image_types }}
+          platforms: ${{ matrix.platform }}
+          # labels: ${{ steps.meta.outputs.labels }}
+          # tags: ${{ steps.meta.outputs.tags }}
+          outputs: 
+            type=image,name=${{ env.REGISTRY_IMAGE }},push-by-digest=true,name-canonical=true,push=${{ inputs.push }}
+      
+      -
+        name: Export digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          touch "/tmp/digests/${digest#sha256:}"
+
+      -
+        name: Upload digest
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.image_types }}-${{ env.PLATFORM_PAIR }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  push:
+    name: "Push ${{ inputs.major_version }} ${{ matrix.image_types }} to ${{ inputs.registry }}"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        image_types: ${{ fromJSON(format('[{0}]', inputs.image_types || '"default", "minimal", "micro", "base", "init"')) }}
+        # registry:
+        #   - ykohut/almalinux
+        #   - quay.io/ykohut/al
+
+    needs:
+      - build
+    steps:
+      -
+        name: "Prepare envirounment variables"
+        run: |
+          # date stamp
+          STAMP=$(date '+%Y%m%d')
+          echo "STAMP=${STAMP}" >> $GITHUB_ENV
+    
+      -
+        name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: digests-${{ matrix.image_types }}-*
+          merge-multiple: true
+
+      - 
+        name: Display structure of downloaded digests
+        run: ls -la /tmp/digests* | true
+
+      -
+        name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      -
+        name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ inputs.registry }}
+          # Set 'letest' tag for AlmaLinux 9 default image
+          # Set '8'/'9' and 8.9/9.3 tags for AlmaLinux 8 or 9 and default image
+          tags: |
+            type=raw,priority=500,value=latest,enable=${{ matrix.image_types == 'default' && inputs.major_version == '9'  }}
+            type=raw,priority=400,value=${{ inputs.major_version }},enable=${{ matrix.image_types == 'default' }}
+            type=raw,priority=300,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }},enable=${{ matrix.image_types == 'default' }}
+            type=raw,priority=300,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP }},enable=${{ matrix.image_types == 'default' }}
+            type=raw,priority=200,value=${{ inputs.major_version }}-${{ matrix.image_types }},enable=${{ matrix.image_types != 'default' }}
+            type=raw,priority=100,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }},enable=${{ matrix.image_types != 'default' }}
+            type=raw,priority=100,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${{ env.STAMP }},enable=${{ matrix.image_types != 'default' }}
+
+          labels: |
+            maintainer=Yuriy Kohut <ykohut@almalinux.org>
+            org.opencontainers.image.title=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${{ env.STAMP }}
+            org.opencontainers.image.description=Almalinux ${{ inputs.major_version }}.${{ env.VERSION_MINOR }} ${{ matrix.image_types }} images for various platform(s) as of ${{ env.STAMP }}
+            org.opencontainers.image.vendor=AlmaLinux
+
+      -
+        name: Login to Docker.io
+        if: contains(inputs.registry, 'docker.io') && inputs.push
+        uses: docker/login-action@v3
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      -
+        name: Login to Quay.io
+        if: contains(inputs.registry, 'quay.io') && inputs.push
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_IO_USERNAME }}
+          password: ${{ secrets.QUAY_IO_CLI_PASSWORD }}
+      -
+        name: Login to Ghcr.io
+        if: contains(inputs.registry, 'ghcr.io') && inputs.push
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ secrets.GIT_HUB_USERNAME }}
+          password: ${{ secrets.GIT_HUB_TOKEN }}
+
+      -
+        name: Create manifest list and push
+        working-directory: /tmp/digests
+        run: |
+          docker buildx imagetools create $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
+            $(printf '${{ env.REGISTRY_IMAGE }}@sha256:%s ' *)
+      -
+        name: Inspect image
+        run: |
+          docker buildx imagetools inspect ${{ env.REGISTRY_IMAGE }}:${{ steps.meta.outputs.version }}
+
+      # -
+      #   name: Build images
+      #   # if 'Push to registries' is checked
+      #   if: inputs.push
+      #   id: build-images
+      #   uses: docker/build-push-action@v5
       #   with:
-      #     # list of Docker images to use as base name for tags
-      #     images: ${{ inputs.registry }}
-      #     # generate Docker tags based on the following events/attributes
-      #     tags: |
-      #       type=raw,priority=500,value=latest,enable=${{ matrix.image_types == 'default' && inputs.major_version == '9'  }}
-      #       type=raw,priority=400,value=${{ inputs.major_version }},enable=${{ matrix.image_types == 'default' }}
-      #       type=raw,priority=300,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }},enable=${{ matrix.image_types == 'default' }}
-      #       type=raw,priority=300,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP }},enable=${{ matrix.image_types == 'default' }}
-      #       type=raw,priority=200,value=${{ inputs.major_version }}-${{ matrix.image_types }},enable=${{ matrix.image_types != 'default' }}
-      #       type=raw,priority=100,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }},enable=${{ matrix.image_types != 'default' }}
-      #       type=raw,priority=100,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${{ env.STAMP }},enable=${{ matrix.image_types != 'default' }}
-
-      -
-        name: Build images
-        # if 'Push to registries' is checked
-        if: inputs.push
-        id: build-images
-        uses: docker/build-push-action@v5
-        with:
-          provenance: false
-          context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}"
-          file: ./Dockerfile.${{ matrix.image_types }}
-          platforms: ${{ inputs.platform }}
-          push: false
-          load: true
-          tags: ${{ env.TAGS }}
-          # tags: ${{ steps.meta.outputs.tags }}
-          # labels: ${{ steps.meta.outputs.labels }}
+      #     provenance: false
+      #     context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}"
+      #     file: ./Dockerfile.${{ matrix.image_types }}
+      #     platforms: ${{ inputs.platform }}
+      #     push: false
+      #     load: true
+      #     tags: ${{ env.TAGS }}
+      #     # tags: ${{ steps.meta.outputs.tags }}
+      #     # labels: ${{ steps.meta.outputs.labels }}
   
-      -
-        name: Test images
-        # if 'Push to registries' is checked
-        if: inputs.push
-        id: test-images
-        run: |
-          archs="${{ inputs.platform }}"
-          for arch in ${archs//,/ }; do
-            docker run --platform=${arch} ${{ steps.build-images.outputs.imageid }} /bin/bash -c " \
-            uname -m && \
-            cat /etc/almalinux-release \
-            "
-          done
+      # -
+      #   name: Test images
+      #   # if 'Push to registries' is checked
+      #   if: inputs.push
+      #   id: test-images
+      #   run: |
+      #     archs="${{ inputs.platform }}"
+      #     for arch in ${archs//,/ }; do
+      #       docker run --platform=${arch} ${{ steps.build-images.outputs.imageid }} /bin/bash -c " \
+      #       uname -m && \
+      #       cat /etc/almalinux-release \
+      #       "
+      #     done
 
-      -
-        name: Push to registry
-        # if 'Push to registries' is checked
-        if: inputs.push
-        id: push-images
-        uses: docker/build-push-action@v5
-        with:
-          provenance: false
-          context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}"
-          file: ./Dockerfile.${{ matrix.image_types }}
-          platforms: ${{ inputs.platform }}
-          push: ${{ inputs.push }}
-          tags: ${{ env.TAGS }}
-          # tags: ${{ steps.meta.outputs.tags }}
-          # labels: ${{ steps.meta.outputs.labels }}
+      # -
+      #   name: Push to registry
+      #   # if 'Push to registries' is checked
+      #   if: inputs.push
+      #   id: push-images
+      #   uses: docker/build-push-action@v5
+      #   with:
+      #     provenance: false
+      #     context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}"
+      #     file: ./Dockerfile.${{ matrix.image_types }}
+      #     platforms: ${{ inputs.platform }}
+      #     push: ${{ inputs.push }}
+      #     tags: ${{ env.TAGS }}
+      #     # tags: ${{ steps.meta.outputs.tags }}
+      #     # labels: ${{ steps.meta.outputs.labels }}
 
 
-      # STORE ROOTFS on CLIENT
+      # # STORE ROOTFS on CLIENT
 
-      -
-        name: Build and store on client
-        # try to store local if not 'Push to registries'
-        if: ${{ ! inputs.push }}
-        id: build-store-client
-        uses: docker/build-push-action@v5
-        with:
-          provenance: false
-          context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}"
-          file: ./Dockerfile.${{ matrix.image_types }}
-          platforms: ${{ inputs.platform }}
-          push: ${{ inputs.push }}
-          tags: ${{ env.TAGS }}
-          # tags: ${{ steps.meta.outputs.tags }}
-          # labels: ${{ steps.meta.outputs.labels }}
+      # -
+      #   name: Build and store on client
+      #   # try to store local if not 'Push to registries'
+      #   if: ${{ ! inputs.push }}
+      #   id: build-store-client
+      #   uses: docker/build-push-action@v5
+      #   with:
+      #     provenance: false
+      #     context: "{{defaultContext}}:dockerfiles/al${{ inputs.major_version }}"
+      #     file: ./Dockerfile.${{ matrix.image_types }}
+      #     platforms: ${{ inputs.platform }}
+      #     push: ${{ inputs.push }}
+      #     tags: ${{ env.TAGS }}
+      #     # tags: ${{ steps.meta.outputs.tags }}
+      #     # labels: ${{ steps.meta.outputs.labels }}
 
-          # type=oci,dest=./al${{ inputs.major_version }}-${{ matrix.image_types }}.tar
-          # type=image,push=true
-          # type=local,dest=./al${{ inputs.major_version }}-${{ matrix.image_types }}
-          outputs: |
-            type=tar,dest=./al${{ inputs.major_version }}-${{ matrix.image_types }}.tar
+      #     # type=oci,dest=./al${{ inputs.major_version }}-${{ matrix.image_types }}.tar
+      #     # type=image,push=true
+      #     # type=local,dest=./al${{ inputs.major_version }}-${{ matrix.image_types }}
+      #     outputs: |
+      #       type=tar,dest=./al${{ inputs.major_version }}-${{ matrix.image_types }}.tar
 
-      -
-        name: Proceed local output
-        # Try to extract and create rootfs from images
-        if: ${{ failure() }} || ${{ ! inputs.push }}
-        run: |
-          echo "Try to extract and create rootfs from images"
-          sudo rm -rf ${{ env.PLATFORM_PAIR }} || true
-          for PLATFORM in ${{ env.PLATFORM_PAIR }}; do
-            arch=${PLATFORM#linux_} || true
-            echo "Creating almalinux-${{ inputs.major_version }}-docker-${arch}-${{ matrix.image_types }}.tar.xz" || true
-            sudo tar xf ./al${{ inputs.major_version }}-${{ matrix.image_types }}.tar $PLATFORM || true
-            sudo tar Jcf almalinux-${{ inputs.major_version }}-docker-${arch}-${{ matrix.image_types }}.tar.xz ./${PLATFORM} || true
-          done
-          sudo rm -rf ${{ env.PLATFORM_PAIR }} || true
+      # -
+      #   name: Proceed local output
+      #   # Try to extract and create rootfs from images
+      #   if: ${{ failure() }} || ${{ ! inputs.push }}
+      #   run: |
+      #     echo "Try to extract and create rootfs from images"
+      #     sudo rm -rf ${{ env.PLATFORM_PAIR }} || true
+      #     for PLATFORM in ${{ env.PLATFORM_PAIR }}; do
+      #       arch=${PLATFORM#linux_} || true
+      #       echo "Creating almalinux-${{ inputs.major_version }}-docker-${arch}-${{ matrix.image_types }}.tar.xz" || true
+      #       sudo tar xf ./al${{ inputs.major_version }}-${{ matrix.image_types }}.tar $PLATFORM || true
+      #       sudo tar Jcf almalinux-${{ inputs.major_version }}-docker-${arch}-${{ matrix.image_types }}.tar.xz ./${PLATFORM} || true
+      #     done
+      #     sudo rm -rf ${{ env.PLATFORM_PAIR }} || true
 
-          ls -la ./
+      #     ls -la ./
