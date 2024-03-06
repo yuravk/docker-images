@@ -101,8 +101,10 @@ jobs:
           REGISTRIES="${{ inputs.registry }}"
 
           IMAGE_NAMES=
-          # generate image names in format $REGISTRY/${{ inputs.major_version }}-${{ matrix.image_types }}
+          # generate image names in format $REGISTRY/almalinux or $REGISTRY/${{ inputs.major_version }}-${{ matrix.image_types }}
+          # image names are used by docker/metadata-action to set 'images'
           for REGISTRY in ${REGISTRIES//,/ }; do
+            # 'default' images goes to $REGISTRY/almalinux
             [ "${{ matrix.image_types }}" = "default" ] \
               && IMAGE_NAME="$REGISTRY/almalinux" \
               || IMAGE_NAME="$REGISTRY/${{ inputs.major_version }}-${{ matrix.image_types }}"
@@ -273,3 +275,20 @@ jobs:
           # tags: ${{ env.TAGS }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      -
+          name: "Create file with date stamp for ${{ inputs.major_version }} ${{ matrix.image_types }}"
+          if: ${{ matrix.image_types }} == 'default' || ${{ matrix.image_types }} == 'minimal'
+          run: |
+            echo "${{ env.STAMP}}" > ${{ inputs.major_version }}-${{ matrix.image_types }}
+
+      - 
+        name: "Commit date stamp for ${{ inputs.major_version }} ${{ matrix.image_types }}"
+        if: ${{ matrix.image_types }} == 'default' || ${{ matrix.image_types }} == 'minimal'
+        uses: EndBug/add-and-commit@v9
+        with:
+          default_author: user_info
+          new_branch: actions
+          message: "${{ env.STAMP }} stamp for new ${{ inputs.major_version }} ${{ matrix.image_types }} pushed"
+          pull: '--rebase --autostash ...'
+          push: false
