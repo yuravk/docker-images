@@ -290,5 +290,5 @@ jobs:
           default_author: user_info
           new_branch: actions
           message: "${{ env.STAMP }} stamp for new ${{ inputs.major_version }} ${{ matrix.image_types }} pushed"
-          pull: '--rebase --autostash ...'
-          push: false
+          # pull: '--rebase --autostash ...'
+          push: true
