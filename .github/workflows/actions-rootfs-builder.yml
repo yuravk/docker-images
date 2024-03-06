@@ -280,7 +280,7 @@ jobs:
           name: "Create file with date stamp for ${{ inputs.major_version }} ${{ matrix.image_types }}"
           if: ${{ matrix.image_types }} == 'default' || ${{ matrix.image_types }} == 'minimal'
           run: |
-            echo "${{ env.STAMP}}" > ${{ inputs.major_version }}-${{ matrix.image_types }}
+            echo "${{ env.STAMP}}" > dockerfiles/official/${{ inputs.major_version }}-${{ matrix.image_types }}
 
       - 
         name: "Commit date stamp for ${{ inputs.major_version }} ${{ matrix.image_types }}"
@@ -288,7 +288,7 @@ jobs:
         uses: EndBug/add-and-commit@v9
         with:
           default_author: user_info
-          new_branch: actions
-          message: "${{ env.STAMP }} stamp for new ${{ inputs.major_version }} ${{ matrix.image_types }} pushed"
+          new_branch: official
+          message: "Image(s) as of ${{ env.STAMP }} for ${{ inputs.major_version }} ${{ matrix.image_types }}."
           # pull: '--rebase --autostash ...'
           push: true
