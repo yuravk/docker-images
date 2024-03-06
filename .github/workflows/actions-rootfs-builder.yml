@@ -103,7 +103,11 @@ jobs:
           IMAGE_NAMES=
           # generate image names in format $REGISTRY/${{ inputs.major_version }}-${{ matrix.image_types }}
           for REGISTRY in ${REGISTRIES//,/ }; do
-            IMAGE_NAMES="${IMAGE_NAMES} $REGISTRY/${{ inputs.major_version }}-${{ matrix.image_types }}"
+            [ "${{ matrix.image_types }}" = "default" ] \
+              && IMAGE_NAME="$REGISTRY/almalinux" \
+              || IMAGE_NAME="$REGISTRY/${{ inputs.major_version }}-${{ matrix.image_types }}"
+            IMAGE_NAMES="${IMAGE_NAMES} ${IMAGE_NAME}"
+            unset IMAGE_NAME
           done
 
           # remove space at the beginning of string
@@ -211,7 +215,7 @@ jobs:
 
           # generate Docker tags
           tags: |
-            type=raw,priority=500,value=latest,enable=true
+            type=raw,priority=500,value=latest,enable=${{ matrix.image_types != 'default' || ( matrix.image_types == 'default' && inputs.major_version == '9' ) }}
             type=raw,priority=400,value=${{ inputs.major_version }},enable=true
             type=raw,priority=300,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }},enable=true
             type=raw,priority=200,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP }},enable=true
