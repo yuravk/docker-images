@@ -22,7 +22,7 @@ on:
             description: 'Comma-separated list of image types (put each type in quotes): "default", "minimal", "micro", "base", "init"'
             required: true
             default: '"micro"'
- 
+
           # registry:
           #   description: 'Registry to push'
           #   required: true
@@ -45,6 +45,7 @@ on:
 env:
   # VERSION_MINOR: ${{ inputs.major_version == '9' && '3' || '9' }}
   REGISTRY_IMAGE: ykohut/almalinux
+  ACTIONS_STEP_DEBUG: true
 
 jobs:
   build:
@@ -101,8 +102,10 @@ jobs:
           REGISTRIES="${{ inputs.registry }}"
 
           IMAGE_NAMES=
-          # generate image names in format $REGISTRY/${{ inputs.major_version }}-${{ matrix.image_types }}
+          # generate image names in format $REGISTRY/almalinux or $REGISTRY/${{ inputs.major_version }}-${{ matrix.image_types }}
+          # image names are used by docker/metadata-action to set 'images'
           for REGISTRY in ${REGISTRIES//,/ }; do
+            # 'default' images goes to $REGISTRY/almalinux
             [ "${{ matrix.image_types }}" = "default" ] \
               && IMAGE_NAME="$REGISTRY/almalinux" \
               || IMAGE_NAME="$REGISTRY/${{ inputs.major_version }}-${{ matrix.image_types }}"
@@ -114,10 +117,10 @@ jobs:
           IMAGE_NAMES=${IMAGE_NAMES# }
           # separate with comma instead of space and export to the action
           echo "IMAGE_NAMES=${IMAGE_NAMES// /,}" >> $GITHUB_ENV
-          
+
           echo
           echo $IMAGE_NAMES
-    
+
       # -
       #   name: "Prepare tags"
       #   run: |
@@ -152,7 +155,7 @@ jobs:
       #     TAGS=${TAGS# }
       #     # separate with comma instead of space and export to the action
       #     echo "TAGS=${TAGS// /,}" >> $GITHUB_ENV
-          
+
       #     echo
       #     echo $TAGS
 
@@ -167,7 +170,9 @@ jobs:
       -
         name: Checkout
         uses: actions/checkout@v4
- 
+        with:
+          ref: official
+
       -
         name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -199,7 +204,7 @@ jobs:
           username: ${{ secrets.GIT_HUB_USERNAME }}
           password: ${{ secrets.GIT_HUB_TOKEN }}
 
-      - 
+      -
         name: Docker meta
         id: meta
         uses: docker/metadata-action@v5
@@ -219,11 +224,11 @@ jobs:
             type=raw,priority=400,value=${{ inputs.major_version }},enable=true
             type=raw,priority=300,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }},enable=true
             type=raw,priority=200,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP }},enable=true
-          labels: |
-            maintainer=Yuriy Kohut <ykohut@almalinux.org>
-            org.opencontainers.image.title=${{ inputs.major_version }}-${{ matrix.image_types }}
-            org.opencontainers.image.description=Almalinux ${{ inputs.major_version }}.${{ env.VERSION_MINOR }} ${{ matrix.image_types }} images.
-            org.opencontainers.image.vendor=AlmaLinux.org
+          # labels: |
+          #   maintainer=Yuriy Kohut <ykohut@almalinux.org>
+          #   org.opencontainers.image.title=${{ inputs.major_version }}-${{ matrix.image_types }}
+          #   org.opencontainers.image.description=Almalinux ${{ inputs.major_version }}.${{ env.VERSION_MINOR }} ${{ matrix.image_types }} images.
+          #   org.opencontainers.image.vendor=AlmaLinux.org
 
       -
         name: Build images
@@ -240,10 +245,10 @@ jobs:
           load: true
           # tags: ${{ env.TAGS }}
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-  
+          # labels: ${{ steps.meta.outputs.labels }}
+
       -
-        name: Test images
+        name: "[Debug] Test images"
         # if 'Push to registries' is checked
         if: inputs.push
         id: test-images
@@ -272,4 +277,66 @@ jobs:
           push: ${{ inputs.push }}
           # tags: ${{ env.TAGS }}
           tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          # labels: ${{ steps.meta.outputs.labels }}
+
+      # Change 'tag: 19000101' in the 'dockerfiles/official/al*/Dockerfile.*'
+      -
+          name: "Set tag into dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}"
+          # if 'Push to registries' is checked and 'default' or 'minimal' image
+          if: matrix.image_types == 'default' || matrix.image_types == 'minimal'
+          run: |
+            # the data for tag in MAJOR.MINOR-TYPE-DATE format
+            tag="${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${{ env.STAMP}}"
+
+            # if 'default' image, the data for tag in MAJOR.MINOR-DATE format
+            [ "${{ matrix.image_types }}" = "default" ] && tag="${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP}}"
+
+            sed -i "/^\([[:space:]]*#[[:space:]]*tag: \).*/s//\1$tag/" dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
+
+            cat dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
+
+      # Upload changed 'dockerfiles/official/al*/Dockerfile.*'
+      - uses: actions/upload-artifact@v4
+        # if 'Push to registries' is checked and 'default' or 'minimal' image
+        if: matrix.image_types == 'default' || matrix.image_types == 'minimal'
+        with:
+          name: dockerfiles-${{ matrix.image_types }}
+          path: dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
+
+  commit:
+    name: "Commit Dockerfiles for al${{ inputs.major_version }}"
+    runs-on: ubuntu-latest
+    needs:
+      - build
+    steps:
+
+      -
+        name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: official
+
+      # Download uploaded above 'dockerfiles/official/al*/Dockerfile.*'
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+          path: dockerfiles/official/al${{ inputs.major_version }}
+
+      -
+        name: "[Debug] Print dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.*"
+        run: |
+          cat dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.*
+
+      # Commit 'dockerfiles/official/al*/Dockerfile.*'
+      # TODO: does this run only if files changed  ... ?
+      -
+        name: "Commit tag for dockerfiles/official/al${{ inputs.major_version }}"
+        # if 'Push to registries' is checked
+        # if: inputs.push
+        uses: EndBug/add-and-commit@v9
+        with:
+          default_author: user_info
+          new_branch: official
+          message: "Set '# tag: ${{ env.STAMP }}' for 'dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.*'"
+          push: false
+          # push: ${{ inputs.push }}
