@@ -1,6 +1,4 @@
 # tag: 8.9-19700101
 FROM quay.io/ykohut/almalinux:8
 
-LABEL maintainer="AlmaLinux OS Foundation"
-LABEL summary="Provides a AlmaLinux 8 container."
-LABEL description="An Open Source, community owned and governed, forever-free enterprise Linux distribution, focused on long-term stability, providing a robust production-grade platform. AlmaLinux OS is binary compatible with RHEL"
+CMD ["/bin/bash"]
