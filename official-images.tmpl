@@ -1,0 +1,14 @@
+Tags: {{ .tags }}
+GitFetch: refs/heads/official
+GitCommit: {{ .commit_hash }}
+amd64-File: dockerfiles/official/al{{ .version_major }}/Dockerfile.{{ .image_type }}
+arm64v8-GitFetch: refs/heads/official
+arm64v8-GitCommit: {{ .commit_hash }}
+arm64v8-File: dockerfiles/official/al{{ .version_major }}/Dockerfile.{{ .image_type }}
+ppc64le-GitFetch: refs/heads/official
+ppc64le-GitCommit: {{ .commit_hash }}
+ppc64le-File: dockerfiles/official/al{{ .version_major }}/Dockerfile.{{ .image_type }}
+s390x-GitFetch: refs/heads/official
+s390x-GitCommit: {{ .commit_hash }}
+s390x-File: dockerfiles/official/al{{ .version_major }}/Dockerfile.{{ .image_type }}
+Architectures: amd64, arm64v8, ppc64le, s390x
