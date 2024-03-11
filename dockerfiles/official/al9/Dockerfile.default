@@ -1,4 +1,4 @@
-# tag: latest, 9, 9.3, 9.3-20240311
+# tag: latest, 9, 9.3, 9.3-19000101
 FROM quay.io/ykohut/almalinux:9
 
 CMD ["/bin/bash"]

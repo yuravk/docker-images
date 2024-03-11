@@ -1,4 +1,4 @@
-# tag: minimal, 9-minimal, 9.3-minimal, 9.3-minimal-20240311
+# tag: minimal, 9-minimal, 9.3-minimal, 9.3-minimal-19000101
 FROM quay.io/ykohut/9-minimal:9
 
 CMD ["/bin/bash"]
