@@ -42,10 +42,17 @@ on:
             required: true
             type: boolean
 
+          pr:
+            description: 'Create PR to Docker official'
+            required: true
+            type: boolean
+
 env:
   # VERSION_MINOR: ${{ inputs.major_version == '9' && '3' || '9' }}
   REGISTRY_IMAGE: ykohut/almalinux
-  ACTIONS_STEP_DEBUG: true
+  # docker-library/official-images
+  DOCKER_LIBRARY_OFFICIAL: AlmaLinux/docker-library-official-images 
+  LOCAL_LIBRARY_OFFICIAL: ${{ github.actor }}/official-images
 
 jobs:
   build:
@@ -279,21 +286,30 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           # labels: ${{ steps.meta.outputs.labels }}
 
-      # Change 'tag: 19000101' in the 'dockerfiles/official/al*/Dockerfile.*'
+      # Change 'tag:' in the 'dockerfiles/official/al*/Dockerfile.*'
       -
-          name: "Set tag into dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}"
-          # if 'Push to registries' is checked and 'default' or 'minimal' image
-          if: matrix.image_types == 'default' || matrix.image_types == 'minimal'
-          run: |
-            # the data for tag in MAJOR.MINOR-TYPE-DATE format
-            tag="${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${{ env.STAMP}}"
+        name: "Set tag into official Dockerfile"
+        # if 'Push to registries' is checked and 'default' or 'minimal' image
+        if: matrix.image_types == 'default' || matrix.image_types == 'minimal'
+        run: |
+          case ${{ matrix.image_types }} in
+            default)
+              tags="${{ inputs.major_version }}, ${{ inputs.major_version }}.${{ env.VERSION_MINOR }}, ${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP }}"
+              [ "${{ inputs.major_version }}" = "9" ] && tags="latest, ${tags}" ;;
+            minimal)
+              tags="${{ inputs.major_version }}-${{ matrix.image_types }}, ${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}, ${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${{ env.STAMP }}"
+              [ "${{ inputs.major_version }}" = "9" ] && tags="minimal, ${tags}" ;;
+            *)
+          esac
 
-            # if 'default' image, the data for tag in MAJOR.MINOR-DATE format
-            [ "${{ matrix.image_types }}" = "default" ] && tag="${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP}}"
+          # the data for tag in MAJOR.MINOR-TYPE-DATE format
+          tag="${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${{ env.STAMP}}"
+          # if 'default' image, the data for tag in MAJOR.MINOR-DATE format
+          [ "${{ matrix.image_types }}" = "default" ] && tag="${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP}}"
 
-            sed -i "/^\([[:space:]]*#[[:space:]]*tag: \).*/s//\1$tag/" dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
+          sed -i "/^\([[:space:]]*#[[:space:]]*tag: \).*/s//\1${tags}/" dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
 
-            cat dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
+          cat dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
 
       # Upload changed 'dockerfiles/official/al*/Dockerfile.*'
       - uses: actions/upload-artifact@v4
@@ -304,7 +320,8 @@ jobs:
           path: dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
 
   commit:
-    name: "Commit Dockerfiles for al${{ inputs.major_version }}"
+    if: contains(inputs.image_types, 'default') || contains(inputs.image_types, 'minimal')
+    name: "Commit official Dockerfile for ${{ inputs.major_version }}"
     runs-on: ubuntu-latest
     needs:
       - build
@@ -337,6 +354,188 @@ jobs:
         with:
           default_author: user_info
           new_branch: official
-          message: "Set '# tag: ${{ env.STAMP }}' for 'dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.*'"
-          push: false
-          # push: ${{ inputs.push }}
+          message: "Update 'dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.*' with date stamp."
+          # push: true
+          push: ${{ inputs.push }}
+
+  prepare-manifest:
+    if: inputs.pr && ( contains(inputs.image_types, 'default') || contains(inputs.image_types, 'minimal') )
+    name: "Check/prepare manifest for ${{ inputs.major_version }} ${{ matrix.image_types }}"
+    runs-on: ubuntu-latest
+    needs:
+      - commit
+    strategy:
+      fail-fast: false
+      matrix:  
+        image_types: # ${{ fromJSON(format('[{0}]', inputs.image_types || '"default", "minimal"')) }}
+          - default
+          - minimal
+  
+    steps:
+      -
+        name: Checkout ${{ github.repository }}
+        uses: actions/checkout@v4
+        with:
+          ref: official
+          fetch-depth: 0
+        
+      -
+        name: Checkout ${{ env.LOCAL_LIBRARY_OFFICIAL }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LOCAL_LIBRARY_OFFICIAL }}
+          path: official-images
+
+      -
+        name: "Check al${{ inputs.major_version }} ${{ matrix.image_types }} needs official build and prepare data for manifest"
+        run: |
+          tag=$( grep 'tag:' dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }} | sed "s/^[[:space:]]*#[[:space:]]*tag: \(.*\)$/\1/" )
+          echo "tag=${tag}" >> $GITHUB_ENV
+          echo "tag=${tag}"
+
+          to_manifest=false
+          grep "$tag" official-images/library/almalinux >/dev/null || to_manifest=true
+          echo "to_manifest=${to_manifest}" >> $GITHUB_ENV
+          echo "to_manifest=${to_manifest}"
+
+          commit_hash=$( git log -1 --format='%H' dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }} )
+          echo "commit_hash=${commit_hash}" >> $GITHUB_ENV
+          echo "commit_hash=${commit_hash}"
+
+      - 
+        name: "Render manifest for al${{ inputs.major_version }} ${{ matrix.image_types }}"
+        if: env.to_manifest == 'true'
+        id: minifest
+        uses: chuhlomin/render-template@v1
+        with:
+          template: official-manifest.tmpl
+          result_path: official-images/library/almalinux.${{ inputs.major_version }}.${{ matrix.image_types }}
+          vars: |
+            tags: ${{ env.tag }}
+            commit_hash: ${{ env.commit_hash}}
+            version_major: ${{ inputs.major_version }}
+            image_type: ${{ matrix.image_types }}
+
+      - 
+        name: "[Debug] Check manifest for al${{ inputs.major_version }} ${{ matrix.image_types }}"
+        if: env.to_manifest == 'true'
+        run: |
+          cat official-images/library/almalinux.${{ inputs.major_version }}.${{ matrix.image_types }}
+
+      # Upload changed 'official-images/library/almalinux.*'
+      - uses: actions/upload-artifact@v4
+        if: env.to_manifest == 'true'
+        with:
+          name: manifest-${{ matrix.image_types }}
+          path: official-images/library/almalinux.${{ inputs.major_version }}.${{ matrix.image_types }}
+
+  push-pr:
+    if: inputs.pr && ( contains(inputs.image_types, 'default') || contains(inputs.image_types, 'minimal') )
+    name: "Create pull request for the new manifest"
+    runs-on: ubuntu-latest
+    needs:
+      - prepare-manifest
+  
+    steps:
+      -
+        name: Checkout ${{ env.LOCAL_LIBRARY_OFFICIAL }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.LOCAL_LIBRARY_OFFICIAL }}
+          path: official-images
+          token: ${{ secrets.GIT_HUB_TOKEN }}
+
+      # - 
+      #   name: Sync upstream changes for ${{ env.LOCAL_LIBRARY_OFFICIAL }}
+      #   id: sync
+      #   uses: aormsby/Fork-Sync-With-Upstream-action@v3.4.1
+      #   with:
+      #     target_sync_branch: master
+      #     # REQUIRED 'target_repo_token' exactly like this!
+      #     target_repo_token: ${{ secrets.GIT_HUB_TOKEN }}
+      #     upstream_sync_branch: master
+      #     upstream_sync_repo: ${{ env.DOCKER_LIBRARY_OFFICIAL }}
+      #     upstream_repo_access_token: ${{ secrets.GIT_HUB_TOKEN }}
+
+      -
+        name: "Sync ${{ env.LOCAL_LIBRARY_OFFICIAL }} with upstream"
+        run: |
+          cd official-images
+
+          # gh repo sync ${{ env.DOCKER_LIBRARY_OFFICIAL }} -b master --force
+
+          git remote add upstream https://github.com/${{ env.DOCKER_LIBRARY_OFFICIAL }}.git
+          git fetch upstream
+          git checkout master
+          # rebase or merge or merge --no-ff ...
+          git rebase upstream/master
+
+      # Download uploaded above 'official-images/library/almalinux.*'
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: manifest-*
+          merge-multiple: true
+          path: official-images/library/
+
+      -
+        name: "Create head of official-images/library/almalinux"
+        run: |
+          echo "# This file is generated using ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          Maintainers: The AlmaLinux OS Foundation <cloud-infra@almalinux.org> (@AlmaLinux)
+          GitRepo: ${{ github.server_url }}/${{ github.repository }}.git" > official-images/library/almalinux
+
+      -
+        name: "[Debug] Squash manifests into official-images/library/almalinux"
+        run: |
+          for file in $( ls -1 official-images/library/almalinux.${{ inputs.major_version }}.* ); do
+            echo "" >> official-images/library/almalinux
+            cat $file >> official-images/library/almalinux
+          done
+          rm -f official-images/library/almalinux.${{ inputs.major_version }}.*
+          cat official-images/library/almalinux
+
+      -
+        name: "Prepare time stamp"
+        run: |
+          # time stamp
+          TIME_STAMP=$(date '+%H%M%S')
+          echo "TIME_STAMP=${TIME_STAMP}" >> $GITHUB_ENV
+
+      -
+        name: "Commit and push official-images/library/almalinux"
+        uses: EndBug/add-and-commit@v9
+        with:
+          cwd: official-images
+          default_author: user_info
+          message: "Almalinux auto-update - ${{ env.TIME_STAMP }}"
+          # push: false
+          push: ${{ inputs.pr }}
+
+      - 
+        name: Create Pull Request [commendline]
+        run: |
+          cd official-images
+          gh auth login --with-token < <(echo ${{ secrets.GIT_HUB_TOKEN }})
+
+          gh pr create \
+          --title "Almalinux auto-update - ${{ env.TIME_STAMP }}" \
+          --body "This is an auto-generated commit. Any concern or issues, please contact or email AlmaLinux OS Foundation cloud-infra@almalinux.org (@AlmaLinux)" \
+          --repo ${{ env.DOCKER_LIBRARY_OFFICIAL }} \
+          --base master \
+          --draft
+
+      # - 
+      #   name: Create Pull Request
+      #   uses: peter-evans/create-pull-request@v6
+      #   with:
+      #     path: official-images
+      #     add-paths: library
+      #     # branch: master
+      #     # base: master
+      #     # committer: ${{ github.actor }} <${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com>
+      #     commit-message: "Almalinux auto-update - ${{ env.TIME_STAMP }}"
+      #     title: "Almalinux auto-update - ${{ env.TIME_STAMP }}"
+      #     body: "This is an auto-generated commit. Any concern or issues, please contact or email AlmaLinux OS Foundation cloud-infra@almalinux.org (@AlmaLinux)"
+      #     push-to-fork: ${{ env.DOCKER_LIBRARY_OFFICIAL }}
+      #     draft: true
+      #     token: ${{ secrets.GIT_HUB_TOKEN }}
