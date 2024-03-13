@@ -18,10 +18,35 @@ on:
             required: true
             default: 'linux/amd64, linux/arm64'
 
-          image_types:
-            description: 'Comma-separated list of image types (put each type in quotes): "default", "minimal", "micro", "base", "init"'
+          type_default:
+            description: 'default'
             required: true
-            default: '"micro"'
+            type: boolean
+
+          type_minimal:
+            description: 'minimal'
+            required: true
+            type: boolean
+
+          type_micro:
+            description: 'micro'
+            required: true
+            type: boolean
+      
+          type_base:
+            description: 'base'
+            required: true
+            type: boolean
+
+          type_init:
+            description: 'init'
+            required: true
+            type: boolean
+
+          # image_types:
+          #   description: 'Comma-separated list of image types (put each type in quotes): "default", "minimal", "micro", "base", "init"'
+          #   required: true
+          #   default: '"micro"'
 
           # registry:
           #   description: 'Registry to push'
@@ -33,9 +58,12 @@ on:
           #     - quay.io/ykohut
           #     - ghcr.io/yuravk
           registry:
+            # registries production: docker.io/almalinux, quay.io/almalinuxorg
+            # registries testing: quay.io/almalinuxautobot
             description: 'Comma-separated list of registries: docker.io/ykohut, quay.io/ykohut, ghcr.io/yuravk'
             required: true
             default: 'docker.io/ykohut, quay.io/ykohut, ghcr.io/yuravk'
+
 
           push:
             description: 'Push to registries'
@@ -51,7 +79,7 @@ env:
   # VERSION_MINOR: ${{ inputs.major_version == '9' && '3' || '9' }}
   REGISTRY_IMAGE: ykohut/almalinux
   # docker-library/official-images
-  DOCKER_LIBRARY_OFFICIAL: AlmaLinux/docker-library-official-images 
+  DOCKER_LIBRARY_OFFICIAL: LKHN/official-images
   LOCAL_LIBRARY_OFFICIAL: ${{ github.actor }}/official-images
 
 jobs:
@@ -66,13 +94,11 @@ jobs:
         #   - linux/ppc64le
         #   - linux/s390x
         #   - linux/arm64
-
-        image_types: ${{ fromJSON(format('[{0}]', inputs.image_types || '"default", "minimal", "micro", "base", "init"')) }}
-          # - default
-          # - minimal
-          # - micro
-          # - base
-          # - init
+        
+        # Set image types matrix based on boolean inputs.type_* with true value
+        image_types: ${{ fromJSON(format('["{0}", "{1}", "{2}", "{3}", "{4}"]', ( inputs.type_default && 'default' ), ( inputs.type_minimal && 'minimal' ), ( inputs.type_micro && 'micro' ), ( inputs.type_base && 'base' ), ( inputs.type_init && 'init' ) )) }}
+        exclude:
+          - image_types: 'false'
 
     steps:
       -
@@ -102,7 +128,8 @@ jobs:
           # date stamp
           STAMP=$(date '+%Y%m%d')
           echo "STAMP=${STAMP}" >> $GITHUB_ENV
-          echo "::set-output name=date_stamp::${STAMP}"
+          # echo "::set-output name=date_stamp::${STAMP}"
+          echo "date_stamp=${STAMP}" >> "$GITHUB_OUTPUT"
 
       -
         name: "Prepare image names"
@@ -114,6 +141,9 @@ jobs:
           # generate image names in format $REGISTRY/almalinux or $REGISTRY/${{ inputs.major_version }}-${{ matrix.image_types }}
           # image names are used by docker/metadata-action to set 'images'
           for REGISTRY in ${REGISTRIES//,/ }; do
+            # 'default' images should not go to docker.io
+            [ "${{ matrix.image_types }}" = "default" ] && [[ $REGISTRY = *'docker.io'* ]] && continue
+
             # 'default' images goes to $REGISTRY/almalinux
             [ "${{ matrix.image_types }}" = "default" ] \
               && IMAGE_NAME="$REGISTRY/almalinux" \
@@ -262,14 +292,39 @@ jobs:
         if: inputs.push
         id: test-images
         run: |
+          # [Test]
+          platforms="${{ inputs.platform }}"
+          for platform in ${platforms//,/ }; do
 
-          archs="${{ inputs.platform }}"
-          for arch in ${archs//,/ }; do
-            # docker run --platform=${arch} ${{ steps.build-images.outputs.imageid }} /bin/bash -c " \
-            docker run --platform=${arch} ${{ steps.build-images.outputs.digest }} /bin/bash -c " \
-            uname -m \
-            && cat /etc/almalinux-release \
-            && ( test "${{ matrix.image_types }}" != "micro" && rpm -q gpg-pubkey) || true "
+            echo "Testing AlmaLinux ${{ inputs.major_version }} ${{ matrix.image_types }} for ${platform} image:"
+            run_arch=${platform#linux/}
+            # docker run --platform=${platform} ${{ steps.build-images.outputs.imageid }} /bin/bash -c " \
+
+            arch=$( docker run --platform=${platform} ${{ steps.build-images.outputs.digest }} /bin/bash -c "uname -m" )
+            case ${arch}${run_arch} in
+              x86_64amd64|ppc64leppc64le|s390xs390x|aarch64arm64)
+                true;;
+              *)
+                echo " - ${run_arch} doesn't match ${arch}" && false ;;
+            esac
+            echo " + ${run_arch} matches ${arch}"
+
+            almalinux_release=$( docker run --platform=${platform} ${{ steps.build-images.outputs.digest }} /bin/bash -c "cat /etc/almalinux-release" )
+            if [[ ${almalinux_release} = *'AlmaLinux release ${{ inputs.major_version }}'* ]]; then
+              echo " + ${almalinux_release} matched"
+            else
+              echo " - ${almalinux_release} did not match" && false
+            fi
+
+            if [ "${{ matrix.image_types }}" != "micro" ]; then
+              gpg_pubkey=$( docker run --platform=${platform} ${{ steps.build-images.outputs.digest }} /bin/bash -c "rpm -q gpg-pubkey" )
+              if [ -n ${gpg_pubkey} ]; then
+                echo " + GPG KEYS:"
+                echo "${gpg_pubkey}"
+              else
+                echo "  GPG KEY not installed." && false
+              fi
+            fi
           done
 
       -
@@ -309,7 +364,10 @@ jobs:
           # # if 'default' image, the data for tag in MAJOR.MINOR-DATE format
           # [ "${{ matrix.image_types }}" = "default" ] && tag="${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP}}"
 
+          # tag: 8, 8.9, 8.9-20240314
           sed -i "/^\([[:space:]]*#[[:space:]]*tag: \).*/s//\1${tags}/" dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
+          # FROM quay.io/ykohut/almalinux:8-20240314
+          sed -i 's/^\([[:space:]]*FROM[[:space:]]\+.\+:\).\+$/\1${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP}}/' dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
 
           cat dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
 
@@ -325,7 +383,8 @@ jobs:
       date_stamp: ${{ steps.date_stamp.outputs.date_stamp }}
 
   commit:
-    if: contains(inputs.image_types, 'default') || contains(inputs.image_types, 'minimal')
+    # if: contains(inputs.image_types, 'default') || contains(inputs.image_types, 'minimal')
+    if: inputs.type_default || inputs.type_minimal
     name: "Commit official Dockerfile for ${{ inputs.major_version }}"
     runs-on: ubuntu-latest
     needs:
@@ -352,7 +411,6 @@ jobs:
           cat dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.*
 
       # Commit 'dockerfiles/official/al*/Dockerfile.*'
-      # TODO: does this run only if files changed  ... ?
       -
         name: "Commit tag for dockerfiles/official/al${{ inputs.major_version }}"
         # if 'Push to registries' is checked
@@ -361,22 +419,27 @@ jobs:
         with:
           default_author: user_info
           new_branch: official
-          message: "Update Dockerfile.* for Almalinux ${{ inputs.major_version }} with date ${{ needs.build.outputs.date_stamp }} stamp."
+          message: "Almalinux ${{ inputs.major_version }} image build as of ${{ needs.build.outputs.date_stamp }} (with ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})."
           # push: true
           push: ${{ inputs.push }}
 
   prepare-manifest:
-    if: inputs.pr && ( contains(inputs.image_types, 'default') || contains(inputs.image_types, 'minimal') )
-    name: "Check/prepare manifest for ${{ inputs.major_version }} ${{ matrix.image_types }}"
+    # if: inputs.pr && ( contains(inputs.image_types, 'default') || contains(inputs.image_types, 'minimal') )
+    if: inputs.pr && ( inputs.type_default || inputs.type_minimal )
+    name: "Generate manifest for ${{ matrix.major_version }} ${{ matrix.image_types }}"
     runs-on: ubuntu-latest
     needs:
       - commit
     strategy:
       fail-fast: false
       matrix:  
-        image_types: # ${{ fromJSON(format('[{0}]', inputs.image_types || '"default", "minimal"')) }}
+        image_types:
           - default
           - minimal
+
+        major_version:
+          - 8
+          - 9
   
     steps:
       -
@@ -394,61 +457,53 @@ jobs:
           path: official-images
 
       -
-        name: "Check al${{ inputs.major_version }} ${{ matrix.image_types }} needs official build and prepare data for manifest"
+        name: "Get data to prepare manifest for ${{ matrix.major_version }} ${{ matrix.image_types }}"
         run: |
-          to_manifest=false
+          to_manifest=true
           echo "to_manifest=${to_manifest}" >> $GITHUB_ENV
 
-          # All recent builds ( Dockerfile(s) ) are push as single commit, so let's get the last one
-          last_commit=$( git log -1 --format='%H' -- dockerfiles/official/al*/Dockerfile.* )
+          dockerfile="dockerfiles/official/al${{ matrix.major_version }}/Dockerfile.${{ matrix.image_types }}"
 
-          # Skip if current Dockerfile is not in the commit
-          git show ${last_commit} --name-only --pretty="format:" \
-            | grep 'al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}' >/dev/null \
-            || exit 0
-
-          # Get tags (date stamp) from Dockerfile
-          tag=$( grep 'tag:' dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }} | sed "s/^[[:space:]]*#[[:space:]]*tag: \(.*\)$/\1/" )
-          echo "tag=${tag}" >> $GITHUB_ENV
-          echo "tag=${tag}"
-
-          # Will add to manifest if there is no such tags in current one
-          grep "$tag" official-images/library/almalinux >/dev/null || to_manifest=true
-          echo "to_manifest=${to_manifest}" >> $GITHUB_ENV
-          echo "to_manifest=${to_manifest}"
-
+          # The recent commit of Dockerfile for specific version and image type
+          last_commit=$( git log -1 --format='%H' -- ${dockerfile} )
           echo "commit_hash=${last_commit}" >> $GITHUB_ENV
           echo "commit_hash=${last_commit}"
 
+          # Get tags from the Dockerfile
+          tag=$( grep 'tag:' ${dockerfile} | sed "s/^[[:space:]]*#[[:space:]]*tag: \(.*\)$/\1/" )
+          echo "tag=${tag}" >> $GITHUB_ENV
+          echo "tag=${tag}"
+
       - 
-        name: "Render manifest for al${{ inputs.major_version }} ${{ matrix.image_types }}"
+        name: "Render manifest for ${{ matrix.major_version }} ${{ matrix.image_types }}"
         if: env.to_manifest == 'true'
         id: minifest
         uses: chuhlomin/render-template@v1
         with:
           template: official-manifest.tmpl
-          result_path: official-images/library/almalinux.${{ inputs.major_version }}.${{ matrix.image_types }}
+          result_path: official-images/library/almalinux.${{ matrix.major_version }}.${{ matrix.image_types }}
           vars: |
             tags: ${{ env.tag }}
             commit_hash: ${{ env.commit_hash}}
-            version_major: ${{ inputs.major_version }}
+            version_major: ${{ matrix.major_version }}
             image_type: ${{ matrix.image_types }}
 
       - 
-        name: "[Debug] Check manifest for al${{ inputs.major_version }} ${{ matrix.image_types }}"
+        name: "[Debug] Check manifest for ${{ matrix.major_version }} ${{ matrix.image_types }}"
         if: env.to_manifest == 'true'
         run: |
-          cat official-images/library/almalinux.${{ inputs.major_version }}.${{ matrix.image_types }}
+          cat official-images/library/almalinux.${{ matrix.major_version }}.${{ matrix.image_types }}
 
       # Upload changed 'official-images/library/almalinux.*'
       - uses: actions/upload-artifact@v4
         if: env.to_manifest == 'true'
         with:
-          name: manifest-${{ matrix.image_types }}
-          path: official-images/library/almalinux.${{ inputs.major_version }}.${{ matrix.image_types }}
+          name: manifest-${{ matrix.major_version }}.${{ matrix.image_types }}
+          path: official-images/library/almalinux.${{ matrix.major_version }}.${{ matrix.image_types }}
 
   push-pr:
-    if: inputs.pr && ( contains(inputs.image_types, 'default') || contains(inputs.image_types, 'minimal') )
+    # if: inputs.pr && ( contains(inputs.image_types, 'default') || contains(inputs.image_types, 'minimal') )
+    if: inputs.pr && ( inputs.type_default || inputs.type_minimal )
     name: "Create pull request for the new manifest"
     runs-on: ubuntu-latest
     needs:
@@ -505,19 +560,19 @@ jobs:
       -
         name: "[Debug] Squash manifests into official-images/library/almalinux"
         run: |
-          for file in $( ls -1 official-images/library/almalinux.${{ inputs.major_version }}.* ); do
+          for file in $( ls -1 official-images/library/almalinux.*.* ); do
             echo "" >> official-images/library/almalinux
             cat $file >> official-images/library/almalinux
           done
-          rm -f official-images/library/almalinux.${{ inputs.major_version }}.*
+          rm -f official-images/library/almalinux.*.*
           cat official-images/library/almalinux
 
       -
-        name: "Prepare time stamp"
+        name: "Prepare date stamp"
         run: |
-          # time stamp
-          TIME_STAMP=$(date '+%H%M%S')
-          echo "TIME_STAMP=${TIME_STAMP}" >> $GITHUB_ENV
+          # date stamp
+          STAMP=$(date '+%Y%m%d')
+          echo "STAMP=${STAMP}" >> $GITHUB_ENV
 
       -
         name: "Commit and push official-images/library/almalinux"
@@ -525,7 +580,7 @@ jobs:
         with:
           cwd: official-images
           default_author: user_info
-          message: "Almalinux auto-update - ${{ env.TIME_STAMP }}"
+          message: "Almalinux auto-update - ${{ env.STAMP }}"
           # push: false
           push: ${{ inputs.pr }}
 
@@ -536,7 +591,7 @@ jobs:
           gh auth login --with-token < <(echo ${{ secrets.GIT_HUB_TOKEN }})
 
           gh pr create \
-          --title "Almalinux auto-update - ${{ env.TIME_STAMP }}" \
+          --title "Almalinux auto-update - ${{ env.STAMP }}" \
           --body "This is an auto-generated commit. Any concern or issues, please contact or email AlmaLinux OS Foundation cloud-infra@almalinux.org (@AlmaLinux)" \
           --repo ${{ env.DOCKER_LIBRARY_OFFICIAL }} \
           --base master \
@@ -551,8 +606,8 @@ jobs:
       #     # branch: master
       #     # base: master
       #     # committer: ${{ github.actor }} <${{ github.actor_id }}+${{ github.actor }}@users.noreply.github.com>
-      #     commit-message: "Almalinux auto-update - ${{ env.TIME_STAMP }}"
-      #     title: "Almalinux auto-update - ${{ env.TIME_STAMP }}"
+      #     commit-message: "Almalinux auto-update - ${{ env.STAMP }}"
+      #     title: "Almalinux auto-update - ${{ env.STAMP }}"
       #     body: "This is an auto-generated commit. Any concern or issues, please contact or email AlmaLinux OS Foundation cloud-infra@almalinux.org (@AlmaLinux)"
       #     push-to-fork: ${{ env.DOCKER_LIBRARY_OFFICIAL }}
       #     draft: true
