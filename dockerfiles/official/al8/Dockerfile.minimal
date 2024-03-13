@@ -1,4 +1,4 @@
-# tag: 8-minimal, 8.9-minimal, 8.9-minimal-20231124
+# tag: 8-minimal, 8.9-minimal, 8.9-minimal-20240313
 FROM quay.io/ykohut/8-minimal:8
 
 CMD ["/bin/bash"]
