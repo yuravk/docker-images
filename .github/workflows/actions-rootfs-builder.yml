@@ -97,10 +97,12 @@ jobs:
 
       -
         name: "Prepare date stamp"
+        id: date_stamp
         run: |
           # date stamp
           STAMP=$(date '+%Y%m%d')
           echo "STAMP=${STAMP}" >> $GITHUB_ENV
+          echo "::set-output name=date_stamp::${STAMP}"
 
       -
         name: "Prepare image names"
@@ -302,10 +304,10 @@ jobs:
             *)
           esac
 
-          # the data for tag in MAJOR.MINOR-TYPE-DATE format
-          tag="${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${{ env.STAMP}}"
-          # if 'default' image, the data for tag in MAJOR.MINOR-DATE format
-          [ "${{ matrix.image_types }}" = "default" ] && tag="${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP}}"
+          # # the data for tag in MAJOR.MINOR-TYPE-DATE format
+          # tag="${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ matrix.image_types }}-${{ env.STAMP}}"
+          # # if 'default' image, the data for tag in MAJOR.MINOR-DATE format
+          # [ "${{ matrix.image_types }}" = "default" ] && tag="${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP}}"
 
           sed -i "/^\([[:space:]]*#[[:space:]]*tag: \).*/s//\1${tags}/" dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
 
@@ -318,6 +320,9 @@ jobs:
         with:
           name: dockerfiles-${{ matrix.image_types }}
           path: dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}
+
+    outputs:
+      date_stamp: ${{ steps.date_stamp.outputs.date_stamp }}
 
   commit:
     if: contains(inputs.image_types, 'default') || contains(inputs.image_types, 'minimal')
@@ -342,6 +347,8 @@ jobs:
       -
         name: "[Debug] Print dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.*"
         run: |
+          echo "Date stamp: ${{ needs.build.outputs.date_stamp }}"
+
           cat dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.*
 
       # Commit 'dockerfiles/official/al*/Dockerfile.*'
@@ -354,7 +361,7 @@ jobs:
         with:
           default_author: user_info
           new_branch: official
-          message: "Update 'dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.*' with date stamp."
+          message: "Update Dockerfile.* for Almalinux ${{ inputs.major_version }} with date ${{ needs.build.outputs.date_stamp }} stamp."
           # push: true
           push: ${{ inputs.push }}
 
@@ -389,18 +396,29 @@ jobs:
       -
         name: "Check al${{ inputs.major_version }} ${{ matrix.image_types }} needs official build and prepare data for manifest"
         run: |
+          to_manifest=false
+          echo "to_manifest=${to_manifest}" >> $GITHUB_ENV
+
+          # All recent builds ( Dockerfile(s) ) are push as single commit, so let's get the last one
+          last_commit=$( git log -1 --format='%H' -- dockerfiles/official/al*/Dockerfile.* )
+
+          # Skip if current Dockerfile is not in the commit
+          git show ${last_commit} --name-only --pretty="format:" \
+            | grep 'al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }}' >/dev/null \
+            || exit 0
+
+          # Get tags (date stamp) from Dockerfile
           tag=$( grep 'tag:' dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }} | sed "s/^[[:space:]]*#[[:space:]]*tag: \(.*\)$/\1/" )
           echo "tag=${tag}" >> $GITHUB_ENV
           echo "tag=${tag}"
 
-          to_manifest=false
+          # Will add to manifest if there is no such tags in current one
           grep "$tag" official-images/library/almalinux >/dev/null || to_manifest=true
           echo "to_manifest=${to_manifest}" >> $GITHUB_ENV
           echo "to_manifest=${to_manifest}"
 
-          commit_hash=$( git log -1 --format='%H' dockerfiles/official/al${{ inputs.major_version }}/Dockerfile.${{ matrix.image_types }} )
-          echo "commit_hash=${commit_hash}" >> $GITHUB_ENV
-          echo "commit_hash=${commit_hash}"
+          echo "commit_hash=${last_commit}" >> $GITHUB_ENV
+          echo "commit_hash=${last_commit}"
 
       - 
         name: "Render manifest for al${{ inputs.major_version }} ${{ matrix.image_types }}"
