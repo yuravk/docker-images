@@ -1,4 +1,4 @@
-# tag: 8, 8.9, 8.9-20231124
-FROM quay.io/ykohut/almalinux:8
+# tag: 8, 8.9, 8.9-20240314
+FROM quay.io/ykohut/almalinux:8-20240314
 
 CMD ["/bin/bash"]
