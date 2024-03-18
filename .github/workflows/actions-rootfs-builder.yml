@@ -6,7 +6,7 @@ on:
           major_version:
             description: 'AlmaLinux major version'
             required: true
-            default: '9'
+            default: 9
             type: choice
             options:
               - 10
@@ -76,6 +76,7 @@ on:
             type: boolean
 
 env:
+  VERSION_LATEST=9
   # VERSION_MINOR: ${{ inputs.major_version == '9' && '3' || '9' }}
   REGISTRY_IMAGE: ykohut/almalinux
   # docker-library/official-images
@@ -259,7 +260,7 @@ jobs:
 
           # generate Docker tags
           tags: |
-            type=raw,priority=500,value=latest,enable=${{ matrix.image_types != 'default' || ( matrix.image_types == 'default' && inputs.major_version == '9' ) }}
+            type=raw,priority=500,value=latest,enable=${{ matrix.image_types != 'default' || ( matrix.image_types == 'default' && inputs.major_version == var.VERSION_LATEST ) }}
             type=raw,priority=400,value=${{ inputs.major_version }},enable=true
             type=raw,priority=300,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }},enable=true
             type=raw,priority=200,value=${{ inputs.major_version }}.${{ env.VERSION_MINOR }}-${{ env.STAMP }},enable=true
