@@ -204,10 +204,11 @@ jobs:
         run: |
           # Use containerd image store
           # sudo sed -i '$s/}/, "features": { "containerd-snapshotter": true } }/' /etc/docker/daemon.json
-          jq '.features.containerd-snapshotter = true' /etc/docker/daemon.json > /etc/docker/daemon.json.tmp && \
-          mv -f /etc/docker/daemon.json.tmp /etc/docker/daemon.json
+          sudo jq '.features.containerd-snapshotter = true' /etc/docker/daemon.json > /etc/docker/daemon.json.tmp && \
+          sudo mv -f /etc/docker/daemon.json.tmp /etc/docker/daemon.json
           sudo systemctl restart docker
           docker info -f '{{ .DriverStatus }}'
+          echo ""
           cat /etc/docker/daemon.json
 
       -
