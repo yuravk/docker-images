@@ -80,7 +80,7 @@ env:
   # VERSION_MINOR: ${{ inputs.major_version == '9' && '3' || '9' }}
   REGISTRY_IMAGE: ykohut/almalinux
   # docker-library/official-images
-  DOCKER_LIBRARY_OFFICIAL: LKHN/official-images
+  DOCKER_LIBRARY_OFFICIAL: ykohut/official-images
   LOCAL_LIBRARY_OFFICIAL: ${{ github.actor }}/official-images
 
 jobs:
@@ -545,8 +545,18 @@ jobs:
           git remote add upstream https://github.com/${{ env.DOCKER_LIBRARY_OFFICIAL }}.git
           git fetch upstream
           git checkout master
+          
           # rebase or merge or merge --no-ff ...
-          git rebase upstream/master
+          ret=0
+          git rebase upstream/master || ret=$?
+
+          if [ $ret -ne 0 ]; then
+            echo "Abort the rebase, reset last commit, stash it and try to rebase again ..."
+            git rebase --abort
+            git reset HEAD~1
+            git stash
+            git rebase upstream/master
+          fi
 
       # Download uploaded above 'official-images/library/almalinux.*'
       - uses: actions/download-artifact@v4
@@ -592,15 +602,30 @@ jobs:
       - 
         name: Create Pull Request [commendline]
         run: |
+          # create pull request with 'gh pr create'
+          gh_opts='--draft'
+          title="Almalinux auto-update - ${{ env.STAMP }}"
+          body="This is an auto-generated commit. Any concern or issues, please contact or email AlmaLinux OS Foundation cloud-infra@almalinux.org (@AlmaLinux)"
+
           cd official-images
           gh auth login --with-token < <(echo ${{ secrets.GIT_HUB_TOKEN }})
 
-          gh pr create \
-          --title "Almalinux auto-update - ${{ env.STAMP }}" \
-          --body "This is an auto-generated commit. Any concern or issues, please contact or email AlmaLinux OS Foundation cloud-infra@almalinux.org (@AlmaLinux)" \
+          prs=$(gh pr list \
           --repo ${{ env.DOCKER_LIBRARY_OFFICIAL }} \
           --base master \
-          --draft
+          --json title \
+          --jq 'length')
+
+          echo "${prs} pull request(s) found for the ${{ env.DOCKER_LIBRARY_OFFICIAL }} branch master."
+          if [ $prs -lt 1 ]; then
+            echo "Create pull request with 'gh pr create'"
+            gh pr create \
+            --title "${title}" \
+            --body "${body}" \
+            --repo ${{ env.DOCKER_LIBRARY_OFFICIAL }} \
+            --base master \
+            ${gh_opts}
+          fi
 
       # - 
       #   name: Create Pull Request
